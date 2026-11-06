@@ -1,0 +1,8 @@
+{
+  "name": "fcl-local-db-tests",
+  "private": true,
+  "type": "module",
+  "description": "Runs the Supabase migrations on a local throwaway Postgres (PGlite) and checks the required tests.",
+  "scripts": { "test": "node run.mjs" },
+  "devDependencies": { "@electric-sql/pglite": "^0.3.0" }
+}

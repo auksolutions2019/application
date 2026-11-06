@@ -1,0 +1,5 @@
+node_modules/
+.DS_Store
+# dealer business data: stays on this PC only (used by the Phase 7 import)
+docs/*.xlsx
+*.xlsx
