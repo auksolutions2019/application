@@ -456,4 +456,8 @@ Tests 1 to 7 will be a SQL test script that you run in the Supabase SQL editor. 
   - a 64-character random token per sale; the dates count from the bill date
   - the public page `w/` calls the `warranty-check` Edge Function, which calls `warranty_lookup` with the service key only
   - it returns only safe fields and is rate limited: 20 checks per 10 minutes per caller (hashed IP) and 1000 in total
-- **Not seen yet:** the dealer's bill photo did not come through with the request, so the layout follows the written description.
+- **Bill design (decided later on 2026-11-09):** the bill follows the dealer's two sample PDFs exactly.
+  - **Layout:** logo, address, phone and email, then INVOICE with the invoice no. and date; Bill To and a Laptop box (sticker code, serial); the item table; amount in words with Total, each payment as a minus line and a BALANCE bar; a warranty box with the QR and both "Valid till" dates plus the terms; payment instructions; "For, FIRST CHOICE LAPTOPS" and the signature; a thank-you line.
+  - **Paper:** A4 only, no thermal receipt.
+  - **Colour:** "Print bill" uses black and white (Settings "Print in black and white", on by default); "Bill PDF (colour)" is for saving and sharing on WhatsApp.
+  - **Name and logo:** the default logo is the First Choice logo, which carries the name; an uploaded logo gets the business name printed beside it.
