@@ -394,7 +394,7 @@ Tests 1 to 7 will be a SQL test script that you run in the Supabase SQL editor. 
 - **Supabase:** the project is on the **dealer's** Supabase account. The developer is invited as a Developer member.
 - **Commits** use the developer's own Git name and email.
 - **The dealer's Excel** (`docs/*.xlsx`) is never committed. It is gitignored and stays on this PC for the Phase 7 import.
-- **GitHub Pages** will be served from the dealer's repo (Phase 7/8). Cloudinary will be on the dealer's account too, unless decided otherwise.
+- **Hosting (decided 2026-11-09):** Cloudflare Pages, connected to the private GitHub repo (it stays private). Only the app files are published (`tools/pages-build.sh` copies them into `dist/`). Cloudinary is on the dealer's account too, unless decided otherwise.
 
 ## 7. What I'll need from you before Phase 2 runs
 
@@ -436,3 +436,4 @@ Tests 1 to 7 will be a SQL test script that you run in the Supabase SQL editor. 
 - **Edge Functions:** type-checked with Deno. Not yet run against a real Supabase project.
 - **Still to do on the real project:** setup steps 1–10 in README.md, then check by hand: login lock, Realtime between two phones, camera scanning, Cloudinary upload.
 - **Dealer to confirm before the Excel import:** Q1–Q6 answers, plus a second possible double entry found by the import ("HP pentinum 360", OLX, ₹8,500, twice on 27 Sep in lot 786).
+- **Excel names (decided 2026-11-09):** "gandu" and "lady" are never used as a customer name. Those sales are walk-ins with no name, even if a name is typed into the preview.

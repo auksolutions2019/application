@@ -5,3 +5,4 @@ docs/*.xlsx
 *.xlsx
 # browser test pictures
 tests/ui/screenshots/
+dist/

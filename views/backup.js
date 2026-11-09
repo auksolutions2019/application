@@ -4,7 +4,7 @@ import { ICON } from '../ui/icons.js';
 import { toast, confirmBox, dialog, guard } from '../ui/feedback.js';
 import { S, load } from '../api/store.js';
 import { read, write } from '../api/client.js';
-import { readWorkbook, defaultAnswers, buildPlan } from '../lib/excel-plan.js';
+import { readWorkbook, defaultAnswers, buildPlan, NOT_NAMES } from '../lib/excel-plan.js';
 
 let xl = null;    // { raw, answers, expected }
 const LEAD_OPTS = ['OLX', 'Instagram', 'Lead Matrix', 'Circle app', 'Octo', 'Walk-in', 'Old customer', 'Dealer', 'Other'];
@@ -44,7 +44,7 @@ function excelPreview() {
   ${Object.entries(a.customers).map(([key, c]) => `<div class="preview-flag" style="background:var(--ice)"><b>"${esc(key)}"</b><span class="muted">${esc(c.why || '')}</span>
     <div class="row nw"><div><select onchange="A.xlCust('${enc(key)}','lead',this.value)">${LEAD_OPTS.map(o => `<option ${o === c.lead ? 'selected' : ''}>${o}</option>`).join('')}</select></div>
     <div><select onchange="A.xlCust('${enc(key)}','type',this.value)">${['Retail', 'Dealer'].map(o => `<option ${o === c.type ? 'selected' : ''}>${o}</option>`).join('')}</select></div>
-    <div><input value="${esc(c.name)}" placeholder="No name" onchange="A.xlCust('${enc(key)}','name',this.value)"></div></div></div>`).join('')}</div>
+    <div>${NOT_NAMES.includes(key) ? '<input value="" placeholder="Walk-in, no name" disabled>' : `<input value="${esc(c.name)}" placeholder="No name" onchange="A.xlCust('${enc(key)}','name',this.value)">`}</div></div></div>`).join('')}</div>
   <div class="card"><h3>Assumptions</h3><ol style="margin:8px 0 0 18px;display:grid;gap:6px">${P.assumptions.map(x => `<li>${esc(x)}</li>`).join('')}</ol></div>
   <button style="width:100%;padding:14px" ${errors.length ? 'disabled' : ''} onclick="A.xlImport()">Import ${t.laptops} laptops and ${t.sales} sales</button>
   <button class="ghost" style="width:100%;margin-top:8px" onclick="A.xlCancel()">Cancel</button>`;

@@ -11,7 +11,7 @@ Stock, sales and money app for First Choice Laptops (Auk Solutions), R.T Nagar, 
 
 Admin, co-admin and staff each log in with their own mobile number and 6-digit PIN, and all phones share live data.
 
-- **Front end:** plain HTML, CSS and JavaScript (ES modules, no build step), hosted as static files.
+- **Front end:** plain HTML, CSS and JavaScript (ES modules, no build step), hosted on Cloudflare Pages from the private GitHub repo.
 - **Back end:** Supabase (Postgres with Row Level Security, database functions, Realtime, Auth, three Edge Functions).
 - **Photos:** Cloudinary (unsigned upload preset).
 
@@ -74,7 +74,7 @@ npx supabase functions deploy admin-users --no-verify-jwt --use-api
 Supabase already gives the functions `SUPABASE_URL`, `SUPABASE_ANON_KEY` and `SUPABASE_SERVICE_ROLE_KEY`; nothing to add for those. One optional secret limits which website may call the functions:
 
 ```
-npx supabase secrets set APP_ORIGIN=https://auksolutions2019.github.io
+npx supabase secrets set APP_ORIGIN=https://first-choice-laptops.pages.dev
 ```
 
 You can also add it in the dashboard: **Edge Functions → Secrets**, name `APP_ORIGIN`. Use the site address from step 8. If you skip this, any site may call the functions; the PIN lock and role checks still apply.
@@ -108,17 +108,32 @@ window.FCL_CONFIG = {
 
 These two values are public by design: Row Level Security protects the data. **Never** put the `service_role` or secret key in `config.js`, in this repo, or anywhere in the app. Commit and push the change.
 
-## 8. Publish on GitHub Pages
+## 8. Publish on Cloudflare Pages (free, the GitHub repo stays private)
 
-1. On the repo (**auksolutions2019/application**), go to **Settings → Pages**.
-2. Set **Source** to *Deploy from a branch*, choose branch `main` and folder `/ (root)`, and click Save.
-3. After a minute the site is at `https://auksolutions2019.github.io/application/`. Open it on each phone and use **Add to Home screen**.
+Cloudflare Pages publishes the app straight from the private GitHub repo, on every push to `main`. It publishes only the app's own files: `docs/`, `tests/`, `supabase/`, `prototype/` and `tools/` stay private. The copy step is in `tools/pages-build.sh`.
 
-**Note:** GitHub Pages on a *private* repository needs a paid GitHub plan (Pro or Team). On a free plan, either:
-- make the repository public (it has no secrets; `docs/PLAN.md` has business notes you may want to remove first), or
-- host the same files on a free static host such as Cloudflare Pages or Netlify, connected to the private repo.
+1. Go to **dash.cloudflare.com** and sign up or sign in with the dealer's email. The Free plan is enough.
+2. In the left menu, open **Workers & Pages**, then click **Create**. Choose the **Pages** tab, then **Connect to Git**.
+3. Click **Connect GitHub**. A GitHub window opens: sign in as **auksolutions2019**, choose **Only select repositories**, pick **auksolutions2019/application**, then click **Install & Authorize**.
+4. Back in Cloudflare, select the **application** repository and click **Begin setup**.
+5. Fill in the build settings exactly:
+   - **Project name:** `first-choice-laptops` (this becomes the address `https://first-choice-laptops.pages.dev`; if the name is taken, Cloudflare adds a few letters, so use the address it shows)
+   - **Production branch:** `main`
+   - **Framework preset:** None
+   - **Build command:** `bash tools/pages-build.sh`
+   - **Build output directory:** `dist`
+   - **Environment variables:** none
+6. Click **Save and Deploy**. After about a minute it shows **Success** and the site address.
+7. Open the address on each phone, log in, and use **Add to Home screen** (Android: Chrome menu ⋮ → Add to Home screen / Install app).
+8. Go back to step 5 of this README and set `APP_ORIGIN` to this exact address, with no slash at the end, for example `https://first-choice-laptops.pages.dev`.
 
-The live camera scanner needs https, which all of these give.
+From now on, every `git push` to `main` updates the site by itself in about a minute. Cloudflare's **Deployments** list shows each one and can roll back to an earlier one.
+
+**Optional:**
+- **Own domain:** in the Pages project, **Custom domains → Set up a custom domain**, for example `stock.firstchoicelaptops.in`. If you add one, set `APP_ORIGIN` to it.
+- **Preview sites:** pushes to other branches get their own preview address. They use the same Supabase project, so test there with care, or turn them off under **Settings → Builds → Branch control**.
+
+The live camera scanner needs https, which Cloudflare Pages gives.
 
 ## 9. Daily keep-alive ping
 
@@ -181,6 +196,7 @@ supabase/     setup_all.sql (run this), migrations/ (its sources), functions/ (E
 tests/local/  database tests on a local Postgres (PGlite): run.mjs, excel.mjs
 tests/ui/     devserver.mjs (local stand-in for Supabase), smoke.mjs (browser test)
 prototype/    the approved one-page prototype (the design reference)
+tools/        build-setup.mjs (makes setup_all.sql), pages-build.sh (Cloudflare Pages copy step)
 docs/PLAN.md  all decisions
 ```
 

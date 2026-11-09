@@ -39,6 +39,9 @@ eq(P.totals.expenses_total, 60900, 'expenses ₹60,900 (not the Excel\'s ₹69)'
 eq(ans.lotDates['10'], '2026-09-01', 'lot 10 dated 1 Sep 2026'); eq(ans.lotDates['13'], '2026-10-09', 'lot 13 dated 9 Oct 2026');
 ok(P.flags.some(f => f.kind === 'wc') && P.flags.filter(f => f.kind === 'wc').length === 3, '3 sales flagged from the "wc" tab, with a lot 12 / 13 choice');
 ok(P.flags.some(f => f.kind === 'dup'), 'possible duplicate on 19 Oct flagged');
+ok(P.plan.sales.every(x => !/^(gandu|lady)$/i.test(x.name)) && P.plan.sales.filter(x => x.lead_source === 'Walk-in' && !x.name).length >= 2, '"gandu" and "lady" are walk-ins with no name');
+const forced = buildPlan(raw, { ...ans, customers: { ...ans.customers, gandu: { lead: 'Dealer', type: 'Dealer', name: 'Gandu' }, lady: { lead: 'Walk-in', type: 'Retail', name: 'Lady' } } });
+ok(forced.plan.sales.every(x => !/^(gandu|lady)$/i.test(x.name)), 'even if typed into the preview, they never become a name');
 ok(!P.flags.some(f => f.kind === 'error'), 'no errors in the plan', JSON.stringify(P.flags.filter(f => f.kind === 'error')));
 
 console.log('\nImport into a fresh local database');
@@ -63,6 +66,7 @@ const e450 = (await db.query(`select count(*) n from public.laptops l join publi
 eq(e450, 3, 'the 3 E450 sales went to the 3 E450 laptops of lot 10');
 const filled = (await db.query(`select count(*) n from public.laptops l join public.lot_lines ln on ln.id = l.line_id where ln.is_mixed and l.status = 'sold' and l.processor is not null`)).rows[0].n;
 ok(filled > 20, `sold laptops from Mixed lots got their specs from the sale text (${filled})`);
+eq((await db.query(`select count(*) n from public.sales where customer_name ~* '^(gandu|lady)$'`)).rows[0].n, 0, 'no sale in the database is named gandu or lady');
 ok((await db.query(`select count(*) n from public.activity_log where action = 'import'`)).rows[0].n == 1, 'one summary line in Activity');
 let again = null; try { await db.query(`select public.import_excel($1::jsonb)`, [JSON.stringify(P.plan)]); } catch (e) { again = e.message; }
 ok(again && /only once/.test(again), 'a second import is refused');
