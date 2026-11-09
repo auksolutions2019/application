@@ -173,7 +173,8 @@ Free Supabase projects pause after 7 days without use. The GitHub Actions workfl
 
 In the app, under **More → Settings → Bill (invoice)**, set these (they are saved in Supabase):
 
-- **Logo:** upload it (it goes to Cloudinary, so do step 11 first).
+- **Logo:** leave it empty to use the First Choice logo, or upload another one (it goes to Cloudinary, so do step 11 first).
+- **Print in black and white:** on by default.
 - **Business name on bills and email.** The address and phone come from Shop details.
 - **Next invoice number:** `58` (the dealer's last paper bill was INV-57). Numbers come from a counter in the database, so two phones never get the same one.
 - **Default warranties:** laptop, and charger and battery (12 months).
@@ -187,6 +188,13 @@ In the app, under **More → Settings → Bill (invoice)**, set these (they are 
 - The WhatsApp bill carries the same check link.
 
 Sales imported from the Excel get no invoice number; they get one the first time their bill is printed.
+
+**The bill design** is the dealer's own invoice. Bills are A4 only; there is no thermal receipt. In the laptop pop-up, after a sale:
+- **Print bill:** black and white, for the A4 printer (when "Print in black and white" is on).
+- **Bill PDF (colour):** the colour version. In the print screen choose **Save as PDF**, then share that PDF on WhatsApp or keep it.
+- **Send bill on WhatsApp:** sends the bill as a text message with the warranty check link.
+
+Without an uploaded logo, the bill uses the First Choice logo, which already carries the name. An uploaded logo gets the business name printed beside it. The signature line reads "For," followed by the business name in capitals, e.g. "For, FIRST CHOICE LAPTOPS".
 
 **Notes:**
 - Every payment and expense has an optional **Note**, next to Ref / UTR, saved in Supabase.
