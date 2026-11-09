@@ -2,6 +2,15 @@
 -- Staff: give and receive, never see or enter charges. Co-admin: may enter a charge, no totals, no paying.
 -- Admin: everything. A stock laptop's charge adds to its cost; a warranty job's charge is a warranty cost.
 
+-- Functions whose arguments changed are dropped first, so re-running never leaves an old version behind.
+do $$
+declare r record;
+begin
+  for r in select p.oid::regprocedure sig from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname = 'public' and p.proname in ('receive_from_service', 'pay_service_partner')
+  loop execute 'drop function ' || r.sig; end loop;
+end $$;
+
 create or replace function private.check_skills(p text[], p_what text) returns void
 language plpgsql immutable set search_path = '' as $$
 begin
@@ -70,7 +79,7 @@ end $$;
 create or replace function public.receive_from_service(
   p_job_id uuid, p_outcome text, p_work_done text default '', p_received_on date default null,
   p_charge numeric default null, p_paid_now boolean default false, p_method text default 'Cash', p_ref text default '',
-  p_client_ref uuid default null
+  p_client_ref uuid default null, p_note text default ''
 ) returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_role text := private.require_user(); v jsonb; j public.service_jobs;
         v_rec date := coalesce(p_received_on, private.today());
@@ -101,8 +110,8 @@ begin
     insert into public.service_charges (job_id, charge) values (j.id, p_charge);
   end if;
   if coalesce(p_paid_now, false) then
-    insert into public.service_payments (partner_id, job_id, paid_on, amount, method, ref)
-    values (j.partner_id, j.id, v_rec, p_charge, p_method, btrim(coalesce(p_ref, '')));
+    insert into public.service_payments (partner_id, job_id, paid_on, amount, method, ref, note)
+    values (j.partner_id, j.id, v_rec, p_charge, p_method, btrim(coalesce(p_ref, '')), btrim(coalesce(p_note, '')));
   end if;
   -- back to where it was: a warranty laptop is the customer's again, a stock laptop is back on the shelf
   update public.laptops set status = case when j.kind = 'warranty' then 'sold' else 'in_stock' end where id = j.laptop_id;
@@ -133,7 +142,8 @@ language sql stable set search_path = '' as $$
 $$;
 
 create or replace function public.pay_service_partner(
-  p_partner_id uuid, p_amount numeric, p_method text default 'Cash', p_ref text default '', p_client_ref uuid default null
+  p_partner_id uuid, p_amount numeric, p_method text default 'Cash', p_ref text default '', p_client_ref uuid default null,
+  p_note text default ''
 ) returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v jsonb; v_owed numeric;
 begin
@@ -145,8 +155,8 @@ begin
   perform private.check_method(p_method);
   v_owed := private.partner_owed(p_partner_id);
   if p_amount > v_owed then raise exception 'That is more than the % owed', private.rs(v_owed); end if;
-  insert into public.service_payments (partner_id, paid_on, amount, method, ref)
-  values (p_partner_id, private.today(), p_amount, p_method, btrim(coalesce(p_ref, '')));
+  insert into public.service_payments (partner_id, paid_on, amount, method, ref, note)
+  values (p_partner_id, private.today(), p_amount, p_method, btrim(coalesce(p_ref, '')), btrim(coalesce(p_note, '')));
   return private.idem_put(p_client_ref, jsonb_build_object('owed', v_owed - p_amount));
 end $$;
 
@@ -198,7 +208,10 @@ begin
        'charges', coalesce((select sum(c.charge) from public.service_charges c join public.service_jobs j on j.id = c.job_id
                             where j.partner_id = p_partner_id), 0),
        'paid', coalesce((select sum(amount) from public.service_payments where partner_id = p_partner_id), 0),
-       'owed', private.partner_owed(p_partner_id))) else '{}'::jsonb end;
+       'owed', private.partner_owed(p_partner_id),
+       'payments', coalesce((select jsonb_agg(jsonb_build_object('id', vp.id, 'paid_on', vp.paid_on, 'amount', vp.amount, 'method', vp.method,
+                                                   'ref', vp.ref, 'note', vp.note) order by vp.paid_on desc, vp.created_at desc)
+                             from public.service_payments vp where vp.partner_id = p_partner_id), '[]'))) else '{}'::jsonb end;
 end $$;
 
 -- Jobs still waiting for a charge (admin and co-admin fill them in).

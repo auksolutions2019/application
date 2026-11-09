@@ -7,10 +7,16 @@ import { S, load, laptopByCode, cachedLaptop, isAdmin, isMgr, role } from '../ap
 import { read, write, updateLaptop } from '../api/client.js';
 import { specEditor, wireSpecEditor, readSpecs, lapName, SKILLS } from '../ui/specs.js';
 import { printStickers, printBill, billText, warrantyOf } from '../ui/print.js';
-import { TESTS, LEADS, status, testBadge, testCount, testsPassed, ageDays, oldDays, atService, lotOf } from './common.js';
+import { TESTS, LEADS, status, testBadge, testCount, testsPassed, ageDays, oldDays, atService, lotOf, noteLine } from './common.js';
 
 let cur = null, mtab = 'hand', resvSell = false, editSpecs = false, dirty = false, floorCache = new Map();
 const L = () => cachedLaptop(cur);
+// The laptops on the same bill: this one, or every laptop of its bulk sale
+function billLaptops(l) {
+  const g = l.sale?.bulk_group; if (!g) return [l];
+  const all = new Map([...S.d.laptops, ...S.extra.values()].filter(x => x.sale?.bulk_group === g).map(x => [x.code, x]));
+  return [...all.values()].sort((a, b) => a.code.localeCompare(b.code));
+}
 
 function pickTab(l) {
   if (atService(l)) return 'svc';
@@ -27,7 +33,7 @@ function render() {
     <button class="ghost sm" onclick="A.closeModal()" aria-label="Close">${ICON.x}</button></div>
   <div class="badges">${status(l)}${testBadge(l)}${w ? w.badge : ''}${!l.sale && age >= oldDays() ? `<span class="pill due">${age} days in stock</span>` : ''}${isAdmin() && l.cost == null && l.full_cost == null ? '<span class="warnmark">Cost missing</span>' : ''}</div>
   ${svc ? `<div class="svcbox">${ICON.tool}<div><b>With ${esc(svc.partner)} since ${fmtD(svc.given_on)}</b><div class="${svc.overdue ? 'overdue' : 'muted'}">${svc.days_out} day${svc.days_out === 1 ? '' : 's'} out${svc.expected_on ? `, expected back ${fmtD(svc.expected_on)}${svc.overdue ? ' (overdue)' : ''}` : ''}${svc.kind === 'warranty' ? ', customer warranty' : ''}</div></div></div>` : ''}
-  ${w ? `<div class="wbox ${w.ok ? '' : 'off'}">${ICON.shield}<div><b>${w.ok ? 'Under warranty' : 'Warranty ended'}</b><div class="muted">${w.months} months, ${w.ok ? 'till' : 'ended on'} ${fmtD(w.end)}. Service support till ${fmtD(w.svc)}.</div></div></div>` : ''}
+  ${w ? `<div class="wbox ${w.ok ? '' : 'off'}">${ICON.shield}<div><b>${w.ok ? 'Under warranty' : 'Warranty ended'}</b><div class="muted">${w.end ? `Laptop ${w.months} months, till ${fmtD(w.end)}. ` : ''}${w.aend ? `Charger and battery till ${fmtD(w.aend)}. ` : ''}Service support till ${fmtD(w.svc)}.</div></div></div>` : ''}
   ${photoStrip(l)}
   ${specBlock(l)}
   <div class="acts3">
@@ -82,10 +88,10 @@ function handPane(l) {
   if (atService(l)) return `<div class="note bad">${ICON.alert}<span>This laptop is with ${esc(l.service.partner)} since ${fmtD(l.service.given_on)}. Receive it back before selling or handing it over.</span></div>`;
   if (l.sale) return soldPane(l);
   const b = l.booking;
-  if (b && !resvSell) return `<div class="resv">${ICON.clock}<div class="cm"><b>Booked by ${esc(b.label)}</b><div class="muted">${esc(b.mobile || '')}, on ${fmtD(b.booked_on)}${b.agreed_price ? `, agreed price ${rs(b.agreed_price)}` : ''}</div><div style="margin-top:4px">Advance paid <b>${rs(b.advance)}</b></div></div></div>
+  if (b && !resvSell) return `<div class="resv">${ICON.clock}<div class="cm"><b>Booked by ${esc(b.label)}</b><div class="muted">${esc(b.mobile || '')}, on ${fmtD(b.booked_on)}${b.agreed_price ? `, agreed price ${rs(b.agreed_price)}` : ''}</div><div style="margin-top:4px">Advance paid <b>${rs(b.advance)}</b></div>${(b.payments || []).map(p => noteLine(p.note, 'booking_payment', p.id)).join('')}</div></div>
     <div class="row" style="margin-top:12px"><button onclick="A.completeSale()">Complete the sale</button><button class="ghost" onclick="A.cancelReserve()">Cancel booking</button></div>`;
   const canSell = testsPassed(l), price = b?.agreed_price || S.d.prices?.[l.shorthand] || '';
-  const def = S.d.settings.default_warranty_months;
+  const def = S.d.settings.default_warranty_months, accDef = S.d.settings.accessory_warranty_months ?? 12;
   return `${!canSell ? `<div class="note bad">${ICON.alert}<span>${TESTS.length - testCount(l)} test${TESTS.length - testCount(l) > 1 ? 's are' : ' is'} not passed yet. ${isAdmin() ? 'You can still sell as admin.' : 'Finish the tests before selling.'}</span></div>` : ''}
   <label>Where the customer came from *</label>${chips('hlead', LEADS, b?.lead_source || '', 'wrap')}
   ${chips('htype', ['Retail', 'Dealer'], b?.customer_type || 'Retail')}${dealerChips()}
@@ -98,8 +104,9 @@ function handPane(l) {
    <p class="muted" style="margin-top:6px">The value is taken off the bill, and the old laptop is added to stock with its own sticker.</p></details>
   ${b ? `<div class="note">${ICON.check}<span>Advance of ${rs(b.advance)} is already counted.</span></div>` : ''}
   <div class="row nw"><div><label>${b ? 'Paid now (on top of advance)' : 'Paid now (₹)'}</label><input id="hpaid" type="number" inputmode="decimal"></div><div><label>Date</label><input id="hdate" type="date" value="${todayIN()}" max="${todayIN()}"></div></div>
-  ${chips('hmeth', METHODS, 'Cash')}<input id="href" placeholder="Ref / UTR (optional)">
-  <label>Warranty</label>${chips('hwar', [['0', 'None'], ['3', '3 months'], ['6', '6 months'], ['12', '12 months']], String([0, 3, 6, 12].includes(def) ? def : 0))}
+  ${chips('hmeth', METHODS, 'Cash')}<div class="row nw"><input id="href" placeholder="Ref / UTR (optional)"><input id="hnote" maxlength="300" placeholder="Note (optional)"></div>
+  <label>Laptop warranty</label>${chips('hwar', [['0', 'None'], ['3', '3 months'], ['6', '6 months'], ['12', '12 months']], String([0, 3, 6, 12].includes(def) ? def : 0))}
+  <label>Charger and battery warranty</label>${chips('hacc', [['0', 'None'], ['6', '6 months'], ['12', '12 months']], String([0, 6, 12].includes(accDef) ? accDef : 0))}
   <p class="muted" style="margin-top:6px">Name and mobile are optional, but the mobile is needed for a warranty or if money is still due.</p>
   <button style="width:100%;margin-top:14px;padding:14px" onclick="A.sellOne()">Mark as sold</button>
   ${!b ? `<button class="ghost" style="width:100%;margin-top:8px" onclick="A.reserveOne()">${ICON.clock}Book for this customer with advance</button>` : ''}`;
@@ -108,16 +115,16 @@ function soldPane(l) {
   const sl = l.sale, due = sl.due, pd = sl.paid, pc = Math.min(100, pd / sl.price * 100), adm = isAdmin();
   const remind = `Assalamu Alaikum ${sl.name || ''}, this is ${S.d.settings.shop_name}, R.T Nagar. A balance of ${rs(due)} is pending for your laptop purchase. Kindly clear it at your convenience. Thank you.`;
   return `<div class="cust"><div class="av">${esc(initials(sl.label))}</div><div class="cm"><b>${esc(sl.label)}</b><div class="muted">${esc(sl.mobile || 'No mobile')}${sl.address ? ', ' + esc(sl.address) : ''} · ${esc(sl.lead_source)}${sl.customer_type === 'Dealer' ? ', dealer' : ''}</div></div>
-   ${sl.mobile ? `<a class="ib" href="tel:${esc(sl.mobile)}" aria-label="Call">${ICON.phone}</a><a class="ib wa" target="_blank" href="${esc(waLink(sl.mobile, due > 0 ? remind : billText(l, S.d.settings)))}" aria-label="WhatsApp">${ICON.wa}</a>` : ''}</div>
+   ${sl.mobile ? `<a class="ib" href="tel:${esc(sl.mobile)}" aria-label="Call">${ICON.phone}</a><a class="ib wa" target="_blank" href="${esc(waLink(sl.mobile, due > 0 ? remind : billText(billLaptops(l), S.d.settings)))}" aria-label="WhatsApp">${ICON.wa}</a>` : ''}</div>
   <div class="paybox"><div class="pb1"><div><span class="muted">Paid</span><b>${rs(pd)}</b></div><div class="right"><span class="muted">${due > 0 ? 'Balance' : 'Fully paid'}</span><b style="color:${due > 0 ? 'var(--red)' : 'var(--green)'}">${rs(due)}</b></div></div>
    <div class="prog"><i style="width:${pc}%;background:${due > 0 ? 'var(--blue)' : 'var(--green)'}"></i></div>
-   <div class="muted" style="margin-top:6px">Sold for ${rs(sl.price)} on ${fmtD(sl.sold_on)}</div></div>
+   <div class="muted" style="margin-top:6px">Sold for ${rs(sl.price)} on ${fmtD(sl.sold_on)}${sl.invoice_no ? `, bill INV-${sl.invoice_no}` : ''}</div></div>
   ${adm ? `<div class="kv"><span>Cost, repairs, parts${l.service_cost ? ' and service' : ''}</span><b>${l.full_cost != null ? rs(l.full_cost) : 'cost missing'}</b></div>
     <div class="kv"><span>Profit on this laptop</span><b style="color:${sl.profit >= 0 ? 'var(--green)' : 'var(--red)'}">${sl.profit != null ? rs(sl.profit) : 'cost missing'}</b></div>` : ''}
-  ${sl.payments.length ? `<h3 class="sh">Payments</h3><div class="list flat">${sl.payments.map((p, i) => `<div class="lrow"><span class="pn">${i + 1}</span><span class="cm">${fmtD(p.paid_on)}<span class="mtag">${esc(p.method)}</span>${p.ref ? `<span class="muted"> ${esc(p.ref)}</span>` : ''}</span><b>${rs(p.amount)}</b></div>`).join('')}</div>` : ''}
+  ${sl.payments.length ? `<h3 class="sh">Payments</h3><div class="list flat">${sl.payments.map((p, i) => `<div class="lrow"><span class="pn">${i + 1}</span><span class="cm">${fmtD(p.paid_on)}<span class="mtag">${esc(p.method)}</span>${p.ref ? `<span class="muted"> ${esc(p.ref)}</span>` : ''}${p.method === 'Exchange' ? '' : noteLine(p.note, p.from_booking ? null : 'sale_payment', p.id)}</span><b>${rs(p.amount)}</b></div>`).join('')}</div>` : ''}
   ${due > 0 && isMgr() ? `<div class="row nw" style="margin-top:12px"><input id="ppay" type="number" inputmode="decimal" placeholder="Amount received (₹)"><button style="flex:none;white-space:nowrap" onclick="A.addPay()">${ICON.plus}Add payment</button></div>
-   ${chips('pmeth', METHODS, 'Cash')}<input id="pref" placeholder="Ref / UTR (optional)"><button class="chipfill" onclick="document.getElementById('ppay').value=${due}">Full balance ${rs(due)}</button>` : ''}
-  <div class="row" style="margin-top:16px"><button class="ghost sm" onclick="A.printBillCur()">Bill and warranty card</button>${sl.mobile ? `<a class="btnlink" target="_blank" href="${esc(waLink(sl.mobile, billText(l, S.d.settings)))}">${ICON.wa}Send bill on WhatsApp</a>` : ''}</div>
+   ${chips('pmeth', METHODS, 'Cash')}<div class="row nw"><input id="pref" placeholder="Ref / UTR (optional)"><input id="pnote" maxlength="300" placeholder="Note (optional)"></div><button class="chipfill" onclick="document.getElementById('ppay').value=${due}">Full balance ${rs(due)}</button>` : ''}
+  <div class="row" style="margin-top:16px"><button class="ghost sm" onclick="A.printBillCur()">Bill and warranty card</button>${sl.mobile ? `<a class="btnlink" target="_blank" href="${esc(waLink(sl.mobile, billText(billLaptops(l), S.d.settings)))}">${ICON.wa}Send bill on WhatsApp</a>` : ''}</div>
   ${adm ? `<div class="row" style="margin-top:8px"><button class="ghost sm" onclick="A.returnSale()">Customer returned it</button><button class="ghost sm" style="color:var(--red)" onclick="A.undoSale()">Undo sale (entry mistake)</button></div>` : ''}`;
 }
 
@@ -135,7 +142,7 @@ function svcPane(l) {
     <label>Result</label>${chips('rout', [['fixed', 'Fixed'], ['not_fixed', 'Not fixed'], ['no_work', 'Returned without work']], 'fixed', 'wrap')}
     ${mgr ? `<label>Service charge (₹)</label><input id="rcharge" type="number" inputmode="decimal" placeholder="Blank if not known yet">
       <p class="muted" style="margin-top:4px">${j.kind === 'warranty' ? 'Counted as a warranty cost, not added to the laptop.' : 'Added to this laptop\'s cost, so profit stays right.'}</p>` : '<p class="muted" style="margin-top:8px">The admin or co-admin will add the service charge.</p>'}
-    ${adm ? `<label>Paid to the partner</label>${chips('rpaid', [['later', 'Pay later'], ['now', 'Paid now']], 'later')}${chips('rmeth', METHODS, 'Cash')}<input id="rref" placeholder="Ref / UTR (optional)">` : ''}
+    ${adm ? `<label>Paid to the partner</label>${chips('rpaid', [['later', 'Pay later'], ['now', 'Paid now']], 'later')}${chips('rmeth', METHODS, 'Cash')}<div class="row nw"><input id="rref" placeholder="Ref / UTR (optional)"><input id="rnote" maxlength="300" placeholder="Note (optional)"></div>` : ''}
     <button style="width:100%;margin-top:14px;padding:14px" onclick="A.receiveService('${j.id}')">Received back</button>${hist}`;
   if (l.booking) return `<div class="note bad">${ICON.alert}<span>This laptop is booked. Complete or cancel the booking before giving it for service.</span></div>${hist}`;
   const partners = (S.d.partners || []).filter(p => p.active);
@@ -228,13 +235,14 @@ export const actions = {
     const floor = isAdmin() ? l.full_cost : isMgr() ? floorCache.get(l.id) : null;
     if (floor != null && price < floor && !await confirmBox('This price is a loss', isAdmin() ? `Cost, parts and repairs are ${rs(floor)}. Selling at ${rs(price)} loses ${rs(floor - price)}.` : `This is below the lowest safe price of ${rs(floor)}.`, 'Sell anyway', 1)) return;
     const args = { p_price: price, p_lead_source: lead, p_customer_type: chipVal('htype'), p_name: val('hname'), p_mobile: val('hmob'), p_address: val('hadd'),
-      p_paid: num('hpaid') || 0, p_method: chipVal('hmeth'), p_ref: val('href'), p_sold_on: val('hdate') || null, p_warranty_months: +chipVal('hwar'),
+      p_paid: num('hpaid') || 0, p_method: chipVal('hmeth'), p_ref: val('href'), p_note: val('hnote'), p_sold_on: val('hdate') || null,
+      p_warranty_months: +chipVal('hwar'), p_accessory_warranty_months: +chipVal('hacc'),
       p_exchange_model: exOn ? exModel : null, p_exchange_value: exOn ? exVal : null };
     await guard(async () => {
       const r = b ? await sellCall('complete_booking', { p_booking_id: b.id, ...args }) : await sellCall('sell_laptop', { p_laptop_id: l.id, ...args });
       if (!r) return;
       resvSell = false; mtab = 'hand';
-      await after(`Sold${r.balance > 0 ? `, balance ${rs(r.balance)}` : ''}${r.exchange_code ? `. Exchange laptop is ${r.exchange_code}` : ''}`);
+      await after(`Sold${r.invoice_no ? `, bill INV-${r.invoice_no}` : ''}${r.balance > 0 ? `, balance ${rs(r.balance)}` : ''}${r.exchange_code ? `. Exchange laptop is ${r.exchange_code}` : ''}`);
     });
   },
   completeSale() { resvSell = true; render(); },
@@ -244,7 +252,7 @@ export const actions = {
     if (!val('hmob')) return toast('Enter the customer mobile to book');
     await guard(async () => {
       await write('book_laptop', { p_laptop_id: l.id, p_mobile: val('hmob'), p_lead_source: lead, p_customer_type: chipVal('htype'), p_name: val('hname'),
-        p_address: val('hadd'), p_agreed_price: num('hprice'), p_advance: num('hpaid') || 0, p_method: chipVal('hmeth'), p_ref: val('href'), p_booked_on: val('hdate') || null });
+        p_address: val('hadd'), p_agreed_price: num('hprice'), p_advance: num('hpaid') || 0, p_method: chipVal('hmeth'), p_ref: val('href'), p_note: val('hnote'), p_booked_on: val('hdate') || null });
       await after('Booked');
     });
   },
@@ -255,21 +263,31 @@ export const actions = {
       return guard(async () => { await write('cancel_booking', { p_booking_id: b.id, p_refund: false }); await after('Booking cancelled'); });
     }
     if (!await confirmBox('Cancel this booking?', `${esc(b.label)} booked it on ${fmtD(b.booked_on)}. The laptop goes back on sale.`, 'Cancel booking', 1)) return;
-    const refund = b.advance > 0 && await confirmBox(`Return the advance of ${rs(b.advance)}?`, 'Choose Cancel if the advance is kept.', 'Yes, refund it');
-    await guard(async () => { await write('cancel_booking', { p_booking_id: b.id, p_refund: !!refund }); await after('Booking cancelled'); });
+    // a note can go with the refund; Cancel here means the advance is kept
+    const refundNote = b.advance > 0 ? await dialog({ title: `Return the advance of ${rs(b.advance)}?`, body: 'Choose Cancel if the advance is kept.', ok: 'Yes, refund it', text: true, placeholder: 'Note (optional)' }) : null;
+    await guard(async () => { await write('cancel_booking', { p_booking_id: b.id, p_refund: refundNote !== null, p_note: refundNote || '' }); await after('Booking cancelled'); });
   },
   async addPay() {
     const a = num('ppay'), l = L(); if (!a || a < 0) return toast('Enter the amount received');
     if (a > l.sale.due) return toast('That is more than the balance of ' + rs(l.sale.due));
-    await guard(async () => { await write('add_sale_payment', { p_sale_id: l.sale.id, p_amount: a, p_method: chipVal('pmeth'), p_ref: val('pref') }); await after(`${rs(a)} received`); });
+    await guard(async () => { await write('add_sale_payment', { p_sale_id: l.sale.id, p_amount: a, p_method: chipVal('pmeth'), p_ref: val('pref'), p_note: val('pnote') }); await after(`${rs(a)} received`); });
   },
-  printBillCur() { printBill(L(), S.d.settings); },
+  async printBillCur() {
+    let l = L();
+    // sales from before bills get their invoice number and warranty QR the first time the bill is printed
+    if (!l.sale.invoice_no || !l.sale.warranty_token) {
+      const ok = await guard(async () => { await write('issue_invoice', { p_sale_id: l.sale.id }); await load(); return true; });
+      if (!ok) return;
+      l = L() || await laptopByCode(cur);
+    }
+    printBill(billLaptops(l), S.d.settings);
+  },
   async returnSale() {
     const l = L(), sl = l.sale, cash = sum(sl.payments.filter(p => p.method !== 'Exchange'), p => p.amount);
     if (!await confirmBox('Customer returned this laptop?', `${esc(sl.label)} paid ${rs(cash)} in money. Next you enter how much you give back.`, 'Continue')) return;
     const r = cash ? await dialog({ title: 'Refund to customer', body: `Up to ${rs(cash)}. Enter 0 if nothing is refunded.`, ok: 'Save return', amount: true, max: cash, allowZero: true }) : { amount: 0, method: 'Cash', ref: '' };
     if (!r) return;
-    await guard(async () => { await write('return_sale', { p_sale_id: sl.id, p_refund: r.amount, p_method: r.method || 'Cash', p_ref: r.ref || '' }); mtab = 'test'; await after('Return saved. The laptop is back in stock.'); });
+    await guard(async () => { await write('return_sale', { p_sale_id: sl.id, p_refund: r.amount, p_method: r.method || 'Cash', p_ref: r.ref || '', p_note: r.note || '' }); mtab = 'test'; await after('Return saved. The laptop is back in stock.'); });
   },
   async undoSale() {
     if (!await confirmBox('Undo this sale?', 'Use this only if the sale was entered by mistake. The payments are reversed and kept in the history.', 'Undo sale', 1)) return;
@@ -289,12 +307,12 @@ export const actions = {
     if (paidNow && !(charge > 0)) return toast('Enter the service charge to mark it paid');
     await guard(async () => {
       await write('receive_from_service', { p_job_id: jobId, p_outcome: chipVal('rout'), p_work_done: val('rwork'), p_received_on: val('rdate') || null,
-        p_charge: charge, p_paid_now: paidNow, p_method: chipVal('rmeth') || 'Cash', p_ref: val('rref') });
+        p_charge: charge, p_paid_now: paidNow, p_method: chipVal('rmeth') || 'Cash', p_ref: val('rref'), p_note: val('rnote') });
       mtab = L()?.sale ? 'hand' : 'test'; await after('Received back from service');
     });
   },
   async fillCharge(jobId) {
-    const r = await dialog({ title: 'Service charge', body: 'What the partner charged for this job.', ok: 'Save charge', amount: true, method: false, allowZero: true });
+    const r = await dialog({ title: 'Service charge', body: 'What the partner charged for this job.', ok: 'Save charge', amount: true, method: false, note: false, allowZero: true });
     if (!r) return;
     await guard(async () => { await write('set_service_charge', { p_job_id: jobId, p_charge: r.amount }); await after('Charge saved'); });
   },

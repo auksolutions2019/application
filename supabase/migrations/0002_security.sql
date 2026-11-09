@@ -60,6 +60,10 @@ begin
   if current_setting('app.wipe', true) = 'on' then   -- only restore_backup sets this
     return coalesce(old, new);
   end if;
+  -- the admin may change the note on a payment, never anything else (edit_payment_note logs the old text)
+  if tg_op = 'UPDATE' and (to_jsonb(new) - 'note' - 'updated_at') = (to_jsonb(old) - 'note' - 'updated_at') then
+    return new;
+  end if;
   raise exception 'Payments cannot be changed or deleted. Add a reversal instead.';
 end $$;
 
@@ -130,7 +134,7 @@ declare t text;
 begin
   foreach t in array array['settings','lots','lot_lines','laptops','laptop_tests','repairs','photos',
     'customers','bookings','booking_payments','sales','sale_payments','returns','refunds','model_prices',
-    'service_partners','service_jobs','sync_ticks']
+    'service_partners','service_jobs','sync_ticks','invoices']
   loop
     execute format('grant select on public.%I to authenticated', t);
     execute format('drop policy if exists user_read on public.%I', t);

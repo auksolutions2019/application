@@ -5,7 +5,7 @@ import { toast, empty, openSheet, sheetHead, closeModal, confirmBox, dialog, gua
 import { S, load, isAdmin, isMgr, role } from '../api/store.js';
 import { read, write, fn, client } from '../api/client.js';
 import { lapName } from '../ui/specs.js';
-import { onShelf, testsPassed } from './common.js';
+import { onShelf, testsPassed, noteLine } from './common.js';
 
 let moneyDay = null, sharePrice = true, shareTested = true, actF = 'all', older = [], shopMonth = null;
 const ROLE_NAME = { admin: 'Admin', coadmin: 'Co-admin', staff: 'Staff' };
@@ -25,7 +25,7 @@ export const views = {
     const ins = m.ins || [], outs = m.outs || [];
     const cashIn = ins.filter(x => x.m !== 'Exchange'), ex = ins.filter(x => x.m === 'Exchange');
     const by = (a, k) => sum(a.filter(x => x.m === k), x => x.amt);
-    const row = x => `<div class="lrow" style="cursor:default"><span class="cm">${esc(x.t)}</span><span class="mtag">${esc(x.m)}</span><b>${rs(x.amt)}</b></div>`;
+    const row = x => `<div class="lrow" style="cursor:default"><span class="cm">${esc(x.t)}${noteLine(x.n, x.k, x.id)}</span><span class="mtag">${esc(x.m)}</span><b>${rs(x.amt)}</b></div>`;
     return `<div class="card"><div class="row nw" style="align-items:center"><h3 style="margin:0">Money on</h3><input type="date" value="${d}" max="${todayIN()}" onchange="A.setMoneyDay(this.value)" style="max-width:170px"></div></div>
     <div class="grid">${METHODS.map(k => stat(k + ' in', rs(by(cashIn, k)))).join('')}${stat('Paid out', rs(sum(outs, x => x.amt)))}</div>
     <div class="card"><h3>Cash drawer check</h3><div class="kv"><span>Cash received</span><b>${rs(by(cashIn, 'Cash'))}</b></div><div class="kv"><span>Cash paid out</span><b>−${rs(by(outs, 'Cash'))}</b></div><div class="kv"><span>Cash change for the day</span><b style="color:${by(cashIn, 'Cash') - by(outs, 'Cash') >= 0 ? 'var(--green)' : 'var(--red)'}">${rs(by(cashIn, 'Cash') - by(outs, 'Cash'))}</b></div>
@@ -78,7 +78,20 @@ export const views = {
     <label>Shop name</label><input id="st_shop_name" value="${esc(st.shop_name)}">
     <label>Phone and WhatsApp</label><input id="st_phone" value="${esc(st.phone)}">
     <label>Address</label><input id="st_addr" value="${esc(st.addr)}">
-    <div class="row nw"><div><label>Default warranty (months)</label><input id="st_warranty" type="number" value="${st.default_warranty_months}"></div><div><label>Old stock after (days)</label><input id="st_old" type="number" value="${st.old_days}"></div></div></div>
+    <div class="row nw"><div><label>Old stock after (days)</label><input id="st_old" type="number" value="${st.old_days}"></div></div></div>
+    <div class="card"><h3>Bill (invoice)</h3><p class="muted">Printed on every bill and in the WhatsApp bill.</p>
+    <div class="row nw" style="align-items:center;margin-top:10px"><img id="st_logo_img" src="${esc(st.logo_url || 'assets/logo.jpg')}" alt="" style="width:64px;height:64px;object-fit:contain;border-radius:10px;background:var(--ice);flex:none">
+      <label class="photobtn" style="margin:0;flex:1">${ICON.cam}Upload logo<input type="file" accept="image/*" style="display:none" onchange="A.uploadLogo(this.files[0]);this.value=''"></label></div>
+    <input id="st_logo_url" type="hidden" value="${esc(st.logo_url || '')}">
+    <label>Business name on bills</label><input id="st_bill_name" value="${esc(st.bill_name || '')}" placeholder="${esc(st.shop_name)}">
+    <label>Email on bills</label><input id="st_bill_email" type="email" value="${esc(st.bill_email || '')}">
+    <p class="muted" style="margin-top:6px">Address and phone come from Shop details above.</p>
+    <div class="row nw"><div><label>Next invoice number</label><div class="mob"><span>INV-</span><input id="st_inv" type="number" min="1" value="${st.invoice_next}"></div></div></div>
+    <div class="row nw"><div><label>Laptop warranty (months)</label><input id="st_warranty" type="number" value="${st.default_warranty_months}"></div><div><label>Charger and battery (months)</label><input id="st_acc" type="number" value="${st.accessory_warranty_months ?? 12}"></div></div>
+    <h3 style="margin-top:18px">Payment instructions</h3>
+    <label>Bank name</label><input id="st_bank_name" value="${esc(st.bank_name || '')}">
+    <label>Account holder</label><input id="st_bank_holder" value="${esc(st.bank_holder || '')}">
+    <div class="row nw"><div><label>Account number</label><input id="st_bank_account" inputmode="numeric" value="${esc(st.bank_account || '')}"></div><div><label>IFSC</label><input id="st_bank_ifsc" autocapitalize="characters" value="${esc(st.bank_ifsc || '')}"></div></div></div>
     <div class="card"><h3>Photos (Cloudinary)</h3><p class="muted">Laptop photos are stored in your free Cloudinary account, not on the phone. Photos are shrunk before upload to save your free credits.</p>
     <label>Cloud name</label><input id="st_cloud" value="${esc(st.cloud_name)}" placeholder="e.g. dxyz123ab" autocapitalize="off">
     <label>Unsigned upload preset</label><input id="st_preset" value="${esc(st.upload_preset)}" placeholder="e.g. fcl_laptops" autocapitalize="off">
@@ -93,7 +106,7 @@ export const views = {
     return `<div class="card"><div class="row nw" style="align-items:center"><h3 style="margin:0">Month</h3><input type="month" value="${m}" onchange="A.setShopMonth(this.value)" style="max-width:170px"></div></div>
     <div class="grid">${stat('Shop expenses', rs(sum(rows, x => x.amount)))}${stat('From Liabilities', rs(sum(rows.filter(x => x.from_liabilities), x => x.amount)))}</div>
     <button class="addbig" onclick="A.formShopExp()">${ICON.plus}Add a shop expense</button>
-    <div class="list">${rows.length ? rows.map(x => `<div class="lrow" style="cursor:default"><span class="cm"><b>${esc(x.type)}</b><span class="muted">${fmtD(x.spent_on)}${x.note ? ', ' + esc(x.note) : ''}${x.ref ? ', ' + esc(x.ref) : ''}</span></span>
+    <div class="list">${rows.length ? rows.map(x => `<div class="lrow" style="cursor:default"><span class="cm"><b>${esc(x.type)}</b><span class="muted">${fmtD(x.spent_on)}${x.ref ? ', ' + esc(x.ref) : ''}</span>${x.from_liabilities ? (x.note ? `<div class="pnote">${esc(x.note)}</div>` : '') : noteLine(x.note, 'shop_expense', x.id)}</span>
       ${x.from_liabilities ? '<span class="mtag">from Liabilities</span>' : `<span class="mtag">${esc(x.method)}</span>`}<b>${rs(x.amount)}</b>${x.from_liabilities ? '' : `<button class="sm ghost" onclick="A.delShopExp('${x.id}')" aria-label="Delete">${ICON.trash}</button>`}</div>`).join('')
       : '<p class="muted" style="padding:16px">No shop expenses this month.</p>'}</div>
     <p class="muted" style="margin:8px 2px">Rent and bills paid in Liabilities show here by themselves, so they are never entered twice.</p>`;
@@ -145,8 +158,25 @@ export const actions = {
   async saveSettings() {
     await guard(async () => {
       await write('save_settings', { p_shop_name: val('st_shop_name'), p_phone: val('st_phone'), p_addr: val('st_addr'), p_default_warranty_months: num('st_warranty') || 0,
-        p_old_days: num('st_old') || 60, p_cloud_name: val('st_cloud'), p_upload_preset: val('st_preset') });
+        p_old_days: num('st_old') || 60, p_cloud_name: val('st_cloud'), p_upload_preset: val('st_preset'),
+        p_bill_name: val('st_bill_name'), p_bill_email: val('st_bill_email'), p_logo_url: val('st_logo_url'),
+        p_bank_name: val('st_bank_name'), p_bank_holder: val('st_bank_holder'), p_bank_account: val('st_bank_account'), p_bank_ifsc: val('st_bank_ifsc'),
+        p_invoice_next: num('st_inv') !== S.d.settings.invoice_next ? num('st_inv') : null, p_accessory_warranty_months: num('st_acc') ?? 12 });
       await load(); toast('Settings saved', 'ok');
+    });
+  },
+  // Logo for bills: shrunk on the phone, stored in Cloudinary, the link saved with the settings
+  async uploadLogo(file) {
+    if (!file) return;
+    const st = S.d.settings, cloud = val('st_cloud') || st.cloud_name, preset = val('st_preset') || st.upload_preset;
+    if (!cloud || !preset) return toast('Fill in the Cloudinary cloud name and upload preset first (Photos, below)');
+    await guard(async () => {
+      const blob = await new Promise((res, rej) => { const i = new Image(); i.onload = () => { const s = Math.min(1, 600 / Math.max(i.width, i.height)), c = document.createElement('canvas'); c.width = i.width * s; c.height = i.height * s; const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); x.drawImage(i, 0, 0, c.width, c.height); c.toBlob(b => b ? res(b) : rej(new Error('Could not read the image')), 'image/png'); }; i.onerror = () => rej(new Error('Could not read the image')); i.src = URL.createObjectURL(file); });
+      const fd = new FormData(); fd.append('file', blob); fd.append('upload_preset', preset); fd.append('folder', 'first-choice/branding');
+      const r = await fetch(`https://api.cloudinary.com/v1_1/${encodeURIComponent(cloud)}/image/upload`, { method: 'POST', body: fd }), j = await r.json();
+      if (!r.ok) throw new Error('Upload failed: ' + (j.error?.message || r.status));
+      $('st_logo_url').value = j.secure_url; $('st_logo_img').src = j.secure_url;
+      toast('Logo uploaded. Tap Save settings to keep it.', 'ok');
     });
   },
   formShopExp() {

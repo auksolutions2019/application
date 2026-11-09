@@ -11,8 +11,9 @@ $$;
 -- ---------- JSON builders ----------
 create or replace function private.payments_json(p_sale uuid) returns jsonb
 language sql stable set search_path = '' as $$
-  select coalesce(jsonb_agg(jsonb_build_object('id', p.id, 'paid_on', p.paid_on, 'amount', p.amount,
-                                               'method', p.method, 'ref', p.ref) order by p.paid_on, p.created_at), '[]')
+  select coalesce(jsonb_agg(jsonb_build_object('id', p.id, 'paid_on', p.paid_on, 'amount', p.amount, 'method', p.method,
+                                               'ref', p.ref, 'note', p.note, 'from_booking', p.booking_payment_id is not null)
+                            order by p.paid_on, p.created_at), '[]')
   from public.sale_payments p where p.sale_id = p_sale and p.reversal_of is null
 $$;
 
@@ -22,7 +23,9 @@ language sql stable set search_path = '' as $$
     'id', s.id, 'sold_on', s.sold_on, 'name', s.customer_name,
     'label', private.cust_label(s.customer_name, s.lead_source),
     'mobile', c.mobile, 'address', s.customer_address, 'lead_source', s.lead_source, 'customer_type', s.customer_type,
-    'price', s.price, 'warranty_months', s.warranty_months, 'bulk_group', s.bulk_group, 'status', s.status,
+    'price', s.price, 'warranty_months', s.warranty_months, 'accessory_warranty_months', s.accessory_warranty_months,
+    'bulk_group', s.bulk_group, 'status', s.status, 'invoice_no', s.invoice_no, 'warranty_token', s.warranty_token,
+    'bill_date', coalesce((select i.issued_on from public.invoices i where i.no = s.invoice_no), s.sold_on),
     'payments', private.payments_json(s.id),
     'paid', private.sale_paid(s.id), 'due', s.price - private.sale_paid(s.id))
   || case when p_role = 'admin' then jsonb_build_object('profit', private.profit(s.id)) else '{}'::jsonb end
@@ -37,7 +40,7 @@ language sql stable set search_path = '' as $$
     'label', private.cust_label(b.customer_name, b.lead_source),
     'mobile', c.mobile, 'address', b.customer_address, 'lead_source', b.lead_source, 'customer_type', b.customer_type,
     'agreed_price', b.agreed_price,
-    'payments', coalesce((select jsonb_agg(jsonb_build_object('paid_on', p.paid_on, 'amount', p.amount, 'method', p.method, 'ref', p.ref)
+    'payments', coalesce((select jsonb_agg(jsonb_build_object('id', p.id, 'paid_on', p.paid_on, 'amount', p.amount, 'method', p.method, 'ref', p.ref, 'note', p.note)
                                            order by p.paid_on, p.created_at)
                           from public.booking_payments p where p.booking_id = b.id), '[]'),
     'advance', coalesce((select sum(amount) from public.booking_payments where booking_id = b.id), 0))
@@ -147,6 +150,9 @@ language sql stable set search_path = '' as $$
        'paid', case when s.code = '00' then null else
                coalesce((select sum(amount) from public.supplier_payments where supplier_id = s.id), 0) end,
        'due', private.supplier_due(s.id),
+       'payments', coalesce((select jsonb_agg(jsonb_build_object('id', sp.id, 'paid_on', sp.paid_on, 'amount', sp.amount, 'method', sp.method,
+                                                 'ref', sp.ref, 'note', sp.note) order by sp.paid_on desc, sp.created_at desc)
+                             from (select * from public.supplier_payments where supplier_id = s.id order by paid_on desc, created_at desc limit 30) sp), '[]'),
        'cost_missing', (select count(*) from public.laptops l join public.lots lo on lo.id = l.lot_id
                         where lo.supplier_id = s.id and not exists (select 1 from public.laptop_costs c where c.laptop_id = l.id)))
      else '{}'::jsonb end
@@ -180,8 +186,8 @@ begin
     'debts', case when r <> 'admin' then '[]'::jsonb else
              coalesce((select jsonb_agg(jsonb_build_object('id', d.id, 'name', d.name, 'type', d.type, 'amount', d.amount,
                          'due_on', d.due_on,
-                         'payments', coalesce((select jsonb_agg(jsonb_build_object('paid_on', p.paid_on, 'amount', p.amount,
-                                                 'method', p.method, 'ref', p.ref) order by p.paid_on, p.created_at)
+                         'payments', coalesce((select jsonb_agg(jsonb_build_object('id', p.id, 'paid_on', p.paid_on, 'amount', p.amount,
+                                                 'method', p.method, 'ref', p.ref, 'note', p.note) order by p.paid_on, p.created_at)
                                                from public.debt_payments p where p.debt_id = d.id), '[]'),
                          'balance', d.amount - coalesce((select sum(amount) from public.debt_payments where debt_id = d.id), 0))
                        order by d.created_at)
@@ -298,44 +304,44 @@ end $$;
 -- Today's money for any date, built from what was already entered.
 create or replace function public.money_day(p_date date)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
-declare r text := private.require_manager();
+declare r text := private.require_manager(); adm boolean := r = 'admin';
 begin
   return jsonb_build_object('date', p_date,
     'ins', coalesce((select jsonb_agg(x) from (
-        select p.amount amt, p.method m, private.cust_label(s.customer_name, s.lead_source) || ', ' || l.code t
+        select p.amount amt, p.method m, private.cust_label(s.customer_name, s.lead_source) || ', ' || l.code t, p.note n, p.id id, 'sale_payment' k
         from public.sale_payments p join public.sales s on s.id = p.sale_id join public.laptops l on l.id = s.laptop_id
         where p.paid_on = p_date and p.reversal_of is null and p.booking_payment_id is null and s.status <> 'voided'
         union all
-        select bp.amount, bp.method, private.cust_label(b.customer_name, b.lead_source) || ' (advance), ' || l.code
+        select bp.amount, bp.method, private.cust_label(b.customer_name, b.lead_source) || ' (advance), ' || l.code, bp.note, bp.id, 'booking_payment'
         from public.booking_payments bp join public.bookings b on b.id = bp.booking_id join public.laptops l on l.id = b.laptop_id
         where bp.paid_on = p_date) x), '[]'),
     'outs', coalesce((select jsonb_agg(x) from (
-        select r.amount amt, 'Cash' m, 'Repair on ' || l.code || ': ' || r.work t
+        select r.amount amt, 'Cash' m, 'Repair on ' || l.code || ': ' || r.work t, '' n, null::uuid id, null k
         from public.repairs r join public.laptops l on l.id = r.laptop_id
         where r.done_on = p_date and r.deleted_at is null and r.lot_expense_id is null
         union all
-        select e.amount, e.method, 'Parts for lot ' || lo.prefix || ': ' || e.count || ' x ' || e.type
+        select e.amount, e.method, 'Parts for lot ' || lo.prefix || ': ' || e.count || ' x ' || e.type, e.note, e.id, 'lot_expense'
         from public.lot_expenses e join public.lots lo on lo.id = e.lot_id
         where e.spent_on = p_date and e.deleted_at is null
         union all
-        -- supplier, Liabilities and shop payments: in full for admin; one combined line per method for co-admin
-        select sum(b.amt), b.m, case when r = 'admin' then b.t else 'Business payments (by admin)' end
+        -- supplier, Liabilities, shop and service payments: in full for admin; one combined line per method for co-admin
+        select sum(b.amt), b.m, case when adm then b.t else 'Business payments (by admin)' end,
+               case when adm then max(b.n) else '' end, case when adm then b.k end, case when adm then max(b.kind) end
         from (
-          select sp.amount amt, sp.method m, 'Supplier ' || s.name t, sp.id k
+          select sp.amount amt, sp.method m, 'Supplier ' || s.name t, sp.note n, sp.id k, 'supplier_payment' kind
           from public.supplier_payments sp join public.suppliers s on s.id = sp.supplier_id where sp.paid_on = p_date
           union all
-          select dp.amount, dp.method, d.name, dp.id
+          select dp.amount, dp.method, d.name, dp.note, dp.id, 'debt_payment'
           from public.debt_payments dp join public.debts d on d.id = dp.debt_id where dp.paid_on = p_date
           union all
-          select se.amount, se.method, 'Shop: ' || se.type || case when se.note <> '' then ', ' || se.note else '' end, se.id
+          select se.amount, se.method, 'Shop: ' || se.type, se.note, se.id, 'shop_expense'
           from public.shop_expenses se where se.spent_on = p_date and se.deleted_at is null
           union all
-          select vp.amount, vp.method, 'Service: ' || private.partner_label(vp.partner_id), vp.id
+          select vp.amount, vp.method, 'Service: ' || private.partner_label(vp.partner_id), vp.note, vp.id, 'service_payment'
           from public.service_payments vp where vp.paid_on = p_date) b
-        group by b.m, case when r = 'admin' then b.t else 'Business payments (by admin)' end,
-                 case when r = 'admin' then b.k end
+        group by b.m, case when adm then b.t else 'Business payments (by admin)' end, case when adm then b.k end
         union all
-        select f.amount, f.method, f.note from public.refunds f where f.refunded_on = p_date) x), '[]'));
+        select f.amount, f.method, coalesce(nullif(f.label, ''), 'Refund'), f.note, f.id, 'refund' from public.refunds f where f.refunded_on = p_date) x), '[]'));
 end $$;
 
 -- Shop expenses: entered ones plus payments of Shop rent / Bill debts ("from Liabilities", read-only).

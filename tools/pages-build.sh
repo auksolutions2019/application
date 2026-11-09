@@ -5,7 +5,7 @@ set -euo pipefail
 rm -rf dist
 mkdir dist
 cp index.html app.js config.js manifest.webmanifest sw.js dist/
-cp -r css assets lib api ui views dist/
+cp -r css assets lib api ui views w dist/
 # keep the browser from holding on to an old config.js or service worker
 cat > dist/_headers <<'H'
 /config.js

@@ -6,3 +6,5 @@ docs/*.xlsx
 # browser test pictures
 tests/ui/screenshots/
 dist/
+# one-time SQL with real mobile numbers / PINs: never committed
+supabase/private/

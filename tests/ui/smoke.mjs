@@ -60,12 +60,36 @@ await shot('03-laptop-hand');
 // sell through the form
 await page.evaluate(() => { document.querySelector('#hlead [data-v="Lead Matrix"]').click(); });
 await page.$eval('#hprice', e => { e.value = ''; }); await page.type('#hprice', '22000');
-await page.type('#hpaid', '20000'); await page.type('#hname', 'Rahul'); await page.type('#hmob', '9811111111');
+await page.type('#hpaid', '20000'); await page.type('#hname', 'Rahul'); await page.type('#hmob', '9811111111'); await page.type('#hnote', 'cash at counter');
 await page.click('button[onclick="A.sellOne()"]'); await wait(1200);
 const sold = await q1(`select s.price, private.sale_paid(s.id) paid, s.lead_source from public.sales s join public.laptops l on l.id = s.laptop_id where l.code = $1 and s.status = 'active'`, [code]);
 ok(sold && +sold.price === 22000 && +sold.paid === 20000 && sold.lead_source === 'Lead Matrix', 'sale saved from the form (₹22,000, ₹20,000 paid, Lead Matrix)', JSON.stringify(sold));
 ok(/Balance/.test(await page.$eval('#sheet', e => e.innerText)), 'pop-up switches to the sold view with the balance');
 await shot('04-laptop-sold');
+const sNote = await q1(`select p.note, s.invoice_no, s.warranty_token, s.accessory_warranty_months acc from public.sale_payments p join public.sales s on s.id = p.sale_id join public.laptops l on l.id = s.laptop_id where l.code = $1`, [code]);
+ok(sNote.note === 'cash at counter' && sNote.invoice_no >= 58 && +sNote.acc === 12, 'note, invoice number and charger/battery warranty saved with the sale', JSON.stringify(sNote));
+ok(/cash at counter/.test(await page.$eval('#sheet', e => e.innerText)), 'the note shows under the payment');
+// the bill
+await page.evaluate(() => { window.print = () => { window.__printed = true; }; });
+await page.evaluate(() => A.printBillCur()); await wait(1500);
+const bill = await page.$eval('#printArea', e => e.innerText);
+ok(/INVOICE/.test(bill) && new RegExp('INV-' + sNote.invoice_no).test(bill) && /BILL TO/.test(bill) && /Rahul/.test(bill), 'bill: INVOICE, invoice number, Bill To', bill.slice(0, 200));
+ok(/Twenty Two Thousand Rupees Only\/-/.test(bill) && /GRAND TOTAL/.test(bill) && /Balance/.test(bill), 'bill: amount in words, grand total, paid and balance');
+ok(/warranty for laptop, 1 year warranty for charger and battery/.test(bill) && /Scan to check warranty. Valid till \d\d-\d\d-\d{4}/.test(bill), 'bill: warranty text and QR caption');
+ok(await page.$$eval('#printArea .wq .q canvas, #printArea .wq .q img', e => e.length) >= 1 && await page.evaluate(() => window.__printed === true), 'warranty QR drawn and the print dialog opened');
+await page.evaluate(() => { document.getElementById('printArea').style.cssText = 'display:block;background:#fff;padding:10px'; document.getElementById('app').style.display = 'none'; document.getElementById('modal').style.display = 'none'; });
+await page.setViewport({ width: 794, height: 1123 }); await wait(300); await shot('10-bill');
+await page.setViewport({ width: 400, height: 860 });
+await page.evaluate(() => { document.getElementById('printArea').style.cssText = ''; document.getElementById('app').style.display = ''; document.getElementById('modal').style.display = ''; document.getElementById('printArea').innerHTML = ''; });
+// the public warranty page (no login)
+const wp = await browser.newPage(); await wp.setViewport({ width: 400, height: 700 });
+await wp.goto('http://localhost:8787/w/?t=' + sNote.warranty_token, { waitUntil: 'networkidle0' }); await wait(500);
+const wtext = await wp.$eval('#out', e => e.innerText);
+ok(/Warranty check/.test(wtext) && /Valid till/.test(wtext) && new RegExp(code).test(wtext) && !/Rahul|98111|22,000|22000/.test(wtext), 'warranty page: valid till, sticker code, and no customer name, mobile or price', wtext);
+await wp.screenshot({ path: join(shots, '11-warranty-page.png') });
+await wp.goto('http://localhost:8787/w/?t=' + '0'.repeat(64), { waitUntil: 'networkidle0' }); await wait(400);
+ok(/not found/i.test(await wp.$eval('#out', e => e.innerText)), 'warranty page: wrong code says not found');
+await wp.close();
 // give a laptop for service, then receive back
 const code2 = demo.l1.codes[5];
 await page.evaluate(() => A.closeModal()); await page.evaluate(c => A.openLaptop(c), code2); await wait(600);

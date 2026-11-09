@@ -437,3 +437,23 @@ Tests 1 to 7 will be a SQL test script that you run in the Supabase SQL editor. 
 - **Still to do on the real project:** setup steps 1–10 in README.md, then check by hand: login lock, Realtime between two phones, camera scanning, Cloudinary upload.
 - **Dealer to confirm before the Excel import:** Q1–Q6 answers, plus a second possible double entry found by the import ("HP pentinum 360", OLX, ₹8,500, twice on 27 Sep in lot 786).
 - **Excel names (decided 2026-11-09):** "gandu" and "lady" are never used as a customer name. Those sales are walk-ins with no name, even if a name is typed into the preview.
+
+## 10. Extra admin, payment notes, dealer's bill with warranty QR (2026-11-09)
+
+- **Extra admin:**
+  - `private.admin_add_user_sql(name, mobile, pin, role)` creates the auth user (bcrypt PIN, hidden email with a random part) and the profile. Only the SQL Editor can run it.
+  - The real mobile and PIN live only in `supabase/private/add_admin.sql`, which is gitignored and deleted after running.
+- **Notes:**
+  - a `note` on every payment and expense table (sale, booking, supplier, debt and service payments, refunds, shop and lot expenses); refunds also keep their own `label`
+  - shown under payments, in Today's money (admin; co-admin's combined business line has none), Activity, and the supplier, partner and debt payment lists
+  - the admin edits notes with `edit_payment_note`; the amount never changes (the no-edit trigger allows only the note), and Activity keeps the old text
+- **Bill:**
+  - matches the dealer's invoice layout (A4)
+  - invoice numbers come from the `invoices` table: the counter is in settings with the row locked, and the primary key means a number can never repeat; it starts at INV-58
+  - one invoice per bulk sale; Excel-imported sales get one only when their bill is first printed
+  - two warranties per sale: laptop, and charger and battery
+- **Warranty QR:**
+  - a 64-character random token per sale; the dates count from the bill date
+  - the public page `w/` calls the `warranty-check` Edge Function, which calls `warranty_lookup` with the service key only
+  - it returns only safe fields and is rate limited: 20 checks per 10 minutes per caller (hashed IP) and 1000 in total
+- **Not seen yet:** the dealer's bill photo did not come through with the request, so the layout follows the written description.

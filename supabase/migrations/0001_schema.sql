@@ -87,6 +87,16 @@ create table if not exists public.settings (
   old_days                int  not null default 60 check (old_days between 1 and 3650),
   cloud_name              text not null default '',
   upload_preset           text not null default '',
+  -- invoice (bill) details
+  bill_name               text not null default '',
+  bill_email              text not null default '',
+  logo_url                text not null default '',
+  bank_name               text not null default '',
+  bank_holder             text not null default '',
+  bank_account            text not null default '',
+  bank_ifsc               text not null default '',
+  invoice_next            int  not null default 58 check (invoice_next >= 1),
+  accessory_warranty_months int not null default 12 check (accessory_warranty_months between 0 and 60),
   created_at              timestamptz not null default now(),
   updated_at              timestamptz not null default now(),
   updated_by              uuid references public.profiles(id)
@@ -299,6 +309,7 @@ create index if not exists bookings_customer_id_idx on public.bookings (customer
 
 create table if not exists public.booking_payments (
   id         uuid primary key default gen_random_uuid(),
+  note        text not null default '' check (length(note) <= 300),
   booking_id uuid not null references public.bookings(id),
   paid_on    date not null,
   amount     numeric(12,2) not null check (amount > 0),
@@ -310,6 +321,16 @@ create table if not exists public.booking_payments (
 );
 create index if not exists booking_payments_booking_id_idx on public.booking_payments (booking_id);
 create index if not exists booking_payments_paid_on_idx on public.booking_payments (paid_on);
+
+-- One invoice number per bill (a single sale, or a bulk sale). The primary key means a number can never repeat.
+create table if not exists public.invoices (
+  no         int primary key check (no > 0),
+  issued_on  date not null,
+  bulk_group uuid,
+  created_by uuid references public.profiles(id) default auth.uid(),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
 
 create table if not exists public.sales (
   id               uuid primary key default gen_random_uuid(),
@@ -324,6 +345,9 @@ create table if not exists public.sales (
   warranty_months  int not null default 0 check (warranty_months between 0 and 60),
   bulk_group       uuid,
   booking_id       uuid references public.bookings(id),
+  invoice_no       int references public.invoices(no),
+  accessory_warranty_months int not null default 0 check (accessory_warranty_months between 0 and 60),
+  warranty_token   text unique,                    -- long random token behind the warranty QR on the bill
   status           text not null default 'active' check (status in ('active','returned','voided')),
   voided_at        timestamptz,
   voided_by        uuid references public.profiles(id),
@@ -331,7 +355,7 @@ create table if not exists public.sales (
   created_by       uuid references public.profiles(id) default auth.uid(),
   created_at       timestamptz not null default now(),
   updated_at       timestamptz not null default now(),
-  check (warranty_months = 0 or customer_id is not null)          -- warranty needs a mobile
+  check ((warranty_months = 0 and accessory_warranty_months = 0) or customer_id is not null)   -- warranty needs a mobile
 );
 -- A laptop can never have two live sales.
 create unique index if not exists sales_one_active on public.sales (laptop_id) where status = 'active';
@@ -341,6 +365,7 @@ create index if not exists sales_lead_source_idx on public.sales (lead_source);
 
 create table if not exists public.sale_payments (
   id                 uuid primary key default gen_random_uuid(),
+  note        text not null default '' check (length(note) <= 300),
   sale_id            uuid not null references public.sales(id),
   paid_on            date not null,
   amount             numeric(12,2) not null check (amount <> 0),
@@ -370,6 +395,7 @@ create index if not exists returns_laptop_id_idx on public.returns (laptop_id);
 
 create table if not exists public.refunds (
   id          uuid primary key default gen_random_uuid(),
+  label       text not null default '',           -- what the refund was for (written by the app)
   return_id   uuid references public.returns(id),
   booking_id  uuid references public.bookings(id),
   refunded_on date not null,
@@ -387,6 +413,7 @@ create index if not exists refunds_refunded_on_idx on public.refunds (refunded_o
 -- ---------- what the shop owes and spends ----------
 create table if not exists public.supplier_payments (
   id          uuid primary key default gen_random_uuid(),
+  note        text not null default '' check (length(note) <= 300),
   supplier_id uuid not null references public.suppliers(id),
   paid_on     date not null,
   amount      numeric(12,2) not null check (amount <> 0),
@@ -416,6 +443,7 @@ create table if not exists public.debts (
 
 create table if not exists public.debt_payments (
   id          uuid primary key default gen_random_uuid(),
+  note        text not null default '' check (length(note) <= 300),
   debt_id     uuid not null references public.debts(id),
   paid_on     date not null,
   amount      numeric(12,2) not null check (amount <> 0),
@@ -528,6 +556,7 @@ create table if not exists public.service_charges (
 
 create table if not exists public.service_payments (
   id          uuid primary key default gen_random_uuid(),
+  note        text not null default '' check (length(note) <= 300),
   partner_id  uuid not null references public.service_partners(id),
   job_id      uuid references public.service_jobs(id),
   paid_on     date not null,
@@ -550,6 +579,13 @@ create table if not exists public.sync_ticks (
   at timestamptz not null default now()
 );
 
+-- Rate limit for the public warranty check page (written only by public.warranty_lookup).
+create table if not exists public.rate_limits (
+  key          text primary key,
+  hits         int not null default 0,
+  window_start timestamptz not null default now()
+);
+
 -- Idempotency: a retried or double-tapped save returns the first result.
 create table if not exists private.rpc_requests (
   client_ref uuid primary key,
@@ -564,9 +600,29 @@ begin
   foreach t in array array['profiles','app_sessions','login_attempts','settings','suppliers','lots','lot_lines','lot_line_costs','laptops',
     'laptop_costs','laptop_tests','lot_expenses','repairs','photos','customers','bookings','booking_payments','sales',
     'sale_payments','returns','refunds','supplier_payments','debts','debt_payments','shop_expenses','model_prices',
-    'service_partners','service_jobs','service_charges','service_payments']
+    'service_partners','service_jobs','service_charges','service_payments','invoices']
   loop
     execute format('drop trigger if exists touch on public.%I', t);
     execute format('create trigger touch before update on public.%I for each row execute function private.touch()', t);
   end loop;
 end $$;
+
+-- ---------- columns added after the first version (no-ops on a new project) ----------
+alter table public.sale_payments     add column if not exists note text not null default '';
+alter table public.booking_payments  add column if not exists note text not null default '';
+alter table public.supplier_payments add column if not exists note text not null default '';
+alter table public.debt_payments     add column if not exists note text not null default '';
+alter table public.service_payments  add column if not exists note text not null default '';
+alter table public.refunds           add column if not exists label text not null default '';
+alter table public.settings add column if not exists bill_name text not null default '';
+alter table public.settings add column if not exists bill_email text not null default '';
+alter table public.settings add column if not exists logo_url text not null default '';
+alter table public.settings add column if not exists bank_name text not null default '';
+alter table public.settings add column if not exists bank_holder text not null default '';
+alter table public.settings add column if not exists bank_account text not null default '';
+alter table public.settings add column if not exists bank_ifsc text not null default '';
+alter table public.settings add column if not exists invoice_next int not null default 58;
+alter table public.settings add column if not exists accessory_warranty_months int not null default 12;
+alter table public.sales add column if not exists invoice_no int references public.invoices(no);
+alter table public.sales add column if not exists accessory_warranty_months int not null default 0;
+alter table public.sales add column if not exists warranty_token text unique;

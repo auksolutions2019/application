@@ -13,8 +13,10 @@ import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 
 const here = dirname(fileURLToPath(import.meta.url)), root = join(here, '..', '..');
-const { PGlite } = createRequire(join(root, 'tests', 'local', 'package.json'))('@electric-sql/pglite');
-const ANON = 'dev-anon-key-not-a-secret-0123456789';
+const req = createRequire(join(root, 'tests', 'local', 'package.json'));
+const { PGlite } = req('@electric-sql/pglite');
+const { pgcrypto } = req('@electric-sql/pglite/contrib/pgcrypto');
+const ANON = 'dev-anon-key-not-a-secret-local-only';
 export const PIN = '246810';
 export const USERS = [
   { id: '00000000-0000-0000-0000-00000000000a', name: 'Ayan', mobile: '9900000001', role: 'admin' },
@@ -28,7 +30,7 @@ const claimsOf = req => { const t = (req.headers.authorization || '').replace(/^
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.png': 'image/png', '.jpg': 'image/jpeg', '.woff2': 'font/woff2', '.svg': 'image/svg+xml' };
 
 export async function startDevServer({ port = 8787, quiet = false } = {}) {
-  const db = new PGlite();
+  const db = new PGlite({ extensions: { pgcrypto } });
   await db.exec(readFileSync(join(root, 'tests', 'local', 'supabase_stub.sql'), 'utf8'));
   for (const f of readdirSync(join(root, 'supabase', 'migrations')).filter(f => f.endsWith('.sql')).sort()) await db.exec(readFileSync(join(root, 'supabase', 'migrations', f), 'utf8'));
   for (const u of USERS) await db.query(`insert into auth.users (id, email) values ($1, $2)`, [u.id, `91${u.mobile}.dev@fcl.local`]);
@@ -128,13 +130,17 @@ export async function startDevServer({ port = 8787, quiet = false } = {}) {
       if (p === '/auth/v1/user') { const c = claimsOf(req); return c ? send(res, 200, { id: c.sub, aud: 'authenticated', role: 'authenticated', email: c.email, app_metadata: {}, user_metadata: {}, created_at: new Date().toISOString() }) : send(res, 401, { message: 'invalid JWT' }); }
       if (p === '/auth/v1/token') { const b = await readBody(req); const r = unb64(b.refresh_token); return send(res, 200, { access_token: jwt(r.sub, r.sid), refresh_token: b.refresh_token, token_type: 'bearer', expires_in: 3600, expires_at: Math.floor(Date.now() / 1000) + 3600, user: { id: r.sub, aud: 'authenticated', role: 'authenticated' } }); }
       if (p === '/auth/v1/logout') return send(res, 204, '');
+      if (p === '/functions/v1/warranty-check') {   // public: runs the same lookup the real function runs (as the service role)
+        const t = url.searchParams.get('t') || '';
+        return serial(async () => { await db.exec('set role service_role'); try { const r = (await db.query(`select public.warranty_lookup($1, $2) r`, [t, req.socket.remoteAddress || 'local'])).rows[0].r; send(res, r.error === 'rate_limited' ? 429 : r.error ? 404 : 200, r.error ? { error: r.error, message: r.error === 'rate_limited' ? 'Too many checks.' : 'Warranty not found. Check the QR on your bill.' } : r); } catch (e) { send(res, 500, { message: e.message }); } finally { await db.exec('reset role'); } });
+      }
       if (p.startsWith('/functions/v1/')) {
         const body = await readBody(req), name = p.slice(14), c = claimsOf(req);
         return serial(async () => { try { const [st, out] = name === 'auth-login' ? await authLogin(body) : name === 'admin-users' ? await adminUsers(body, c) : name === 'change-pin' ? await changePin(body, c) : [404, { message: 'no function' }]; send(res, st, out); } catch (e) { send(res, 500, { message: e.message }); } });
       }
       if (p.startsWith('/realtime/')) return send(res, 404, { message: 'Realtime is not part of the local stand-in' });
       // static files
-      let f = normalize(join(root, decodeURIComponent(p === '/' ? '/index.html' : p)));
+      let f = normalize(join(root, decodeURIComponent(p.endsWith('/') ? p + 'index.html' : p)));
       if (!f.startsWith(root) || !existsSync(f) || statSync(f).isDirectory()) return send(res, 404, 'Not found', 'text/plain');
       res.writeHead(200, { 'Content-Type': MIME[extname(f)] || 'application/octet-stream', 'Cache-Control': 'no-store' });
       res.end(readFileSync(f));
@@ -165,7 +171,7 @@ export async function seed(srv) {
   await R('sell_laptop', { p_laptop_id: await id(l1.codes[0]), p_price: 29500, p_paid: 15000, p_method: 'Cash', p_lead_source: 'OLX', p_name: 'Mohammed Irfan', p_mobile: '9800000001', p_warranty_months: 6, p_sold_on: back(20) });
   await R('sell_laptop', { p_laptop_id: await id(l1.codes[1]), p_price: 21000, p_paid: 21000, p_method: 'UPI', p_lead_source: 'Instagram', p_sold_on: back(3) });
   await R('book_laptop', { p_laptop_id: await id(l1.codes[2]), p_mobile: '9800000002', p_lead_source: 'Walk-in', p_name: 'Sana Khan', p_agreed_price: 19000, p_advance: 2000, p_method: 'UPI' });
-  const pt = await R('save_service_partner', { p_name: 'Ravi', p_mobile: '9845012345', p_shop_name: 'Ravi Chip Repair', p_skills: ['Chip-level', 'Screen'] });
+  const pt = await R('save_service_partner', { p_name: 'Ravi', p_mobile: '9845011111', p_shop_name: 'Ravi Chip Repair', p_skills: ['Chip-level', 'Screen'] });
   await R('give_for_service', { p_laptop_id: await id(l1.codes[3]), p_partner_id: pt.partner_id, p_issues: ['Screen'], p_given_on: back(6), p_expected_on: back(2) });
   await R('add_debt', { p_name: 'Shop rent, November', p_type: 'Shop rent', p_amount: 18000 });
   await R('add_shop_expense', { p_type: 'Salary', p_amount: 12000, p_method: 'Cash', p_note: 'Imran' });

@@ -4,6 +4,7 @@ import { $, esc, codeDigits, codeFromDigits } from '../ui/dom.js';
 import { ICON } from '../ui/icons.js';
 import { toast } from '../ui/feedback.js';
 import { S, laptopByCode } from '../api/store.js';
+import { read } from '../api/client.js';
 import { lapRow } from './common.js';
 
 let stream = null, loopT = null, busy = false, scanner = null;
@@ -73,10 +74,16 @@ export const actions = {
     const r = $('reader'); if (r) r.innerHTML = ''; camIdle(true);
   },
   async gotCode(txt) {
+    const wt = String(txt || '').match(/[?&]t=([0-9a-fA-F]{64})\b/);
     const raw = (txt || '').trim().toUpperCase();
     const code = /^\d{11}$/.test(raw) ? codeFromDigits(raw) : raw;
     actions.stopScan(); if (navigator.vibrate) navigator.vibrate(80);
     try {
+      if (wt) {                                   // warranty QR printed on a bill
+        const l = await read('find_by_warranty_token', { p_token: wt[1].toLowerCase() });
+        if (l) { S.extra.set(l.code, l); return A.openLaptop(l.code); }
+        return scanMsg('This warranty QR does not match any sale in this app.', true);
+      }
       const l = await laptopByCode(code);
       if (l) return A.openLaptop(l.code);
       scanMsg('QR read: <b class="mono">' + esc(code) + '</b> — no laptop has this code in this app.', true);
@@ -111,7 +118,11 @@ export const actions = {
   },
   quickOpen() { const d = codeDigits($('qcode').value), m = all().filter(l => codeDigits(l.code).includes(d)); if (m.length === 1) A.openLaptop(m[0].code); else if (!m.length) toast('No laptop matches ' + d); },
   async pasteCode() {
-    try { const t = await navigator.clipboard.readText(); if (!t) throw 0; $('qcode').value = t.trim(); actions.quickFind(t); }
+    try {
+      const t = await navigator.clipboard.readText(); if (!t) throw 0;
+      if (/[?&]t=[0-9a-fA-F]{64}/.test(t)) return actions.gotCode(t);   // a pasted warranty link from a bill
+      $('qcode').value = t.trim(); actions.quickFind(t);
+    }
     catch (e) { $('qcode').focus(); toast('Long-press the box and tap Paste'); }
   }
 };

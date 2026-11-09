@@ -36,4 +36,10 @@ export function lapRow(l) {
 export function lapList(list, max = 60) {
   return list.length ? `<div class="list flat" style="margin-top:10px">${list.slice(0, max).map(lapRow).join('')}</div>` : '<p class="muted" style="margin-top:10px">Nothing found.</p>';
 }
+// A payment's note, shown under it. The admin gets a pencil to change the note (never the amount).
+export function noteLine(note, kind, id) {
+  const adm = S.d?.me?.role === 'admin' && kind && id;
+  if (!note && !adm) return '';
+  return `<div class="pnote">${note ? esc(note) : '<span class="muted">No note</span>'}${adm ? ` <a class="link" onclick="event.stopPropagation();A.editNote('${kind}','${id}','${encodeURIComponent(note || '').replace(/'/g, '%27')}')" aria-label="Edit note">✎</a>` : ''}</div>`;
+}
 export const matches = (l, q) => [l.code, l.serial, l.shorthand, l.model, l.sale?.name, l.sale?.mobile].some(v => (v || '').toLowerCase().includes(q));

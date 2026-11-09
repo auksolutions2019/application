@@ -1,6 +1,7 @@
 // Runs all migrations on a throwaway local Postgres (PGlite) and checks the required tests.
 // Usage:  cd tests/local && npm install && node run.mjs
 import { PGlite } from '@electric-sql/pglite';
+import { pgcrypto } from '@electric-sql/pglite/contrib/pgcrypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,7 +12,7 @@ process.on('uncaughtException', e => {
 });
 const here = dirname(fileURLToPath(import.meta.url));
 const migDir = join(here, '..', '..', 'supabase', 'migrations');
-const db = new PGlite();
+const db = new PGlite({ extensions: { pgcrypto } });
 
 let pass = 0, fail = 0;
 const ok = (cond, name, extra = '') => {
@@ -395,6 +396,113 @@ ok(pd2.with_them.every(j => j.overdue && j.days_out === 5), 'past the expected d
 ok(pd2.history.sent === 4 && pd2.history.returned === 2 && pd2.history.fixed === 2, 'history: 4 sent, 2 returned, 2 fixed', JSON.stringify(pd2.history));
 eq((await rpc(U.staff, 'get_snapshot')).partners.find(p => p.id === pt.partner_id).out_count, 2, 'partner list shows 2 out');
 
+// ---------- invoices, warranty QR, notes ----------
+console.log('\nInvoices');
+const invAll = (await db.query(`select invoice_no from public.sales where invoice_no is not null`)).rows.map(r => r.invoice_no);
+ok(invAll.length > 0 && new Set(invAll.filter((_, i, a) => true)).size >= 1 && Math.min(...invAll) === 58, 'invoice numbers start at INV-58 (after the dealer\'s INV-57)', String(Math.min(...invAll)));
+const lotI = await rpc(U.admin, 'create_lot', { p_supplier_id: sup.id, p_lot_no: 6, p_bought_on: today, p_lines: [{ is_mixed: true, qty: 8, cost: 80000 }] });
+const idsI = []; for (const c of lotI.codes) { const l = await lap(c); await passAll(U.admin, l.id); idsI.push(l.id); }
+const before6 = +(await one(`select invoice_next from public.settings`)).invoice_next;
+const par = await Promise.all(idsI.slice(0, 6).map((id, i) => rpc(i % 2 ? U.coadmin : U.staff, 'sell_laptop', { p_laptop_id: id, p_price: 15000, p_paid: 15000, p_method: 'UPI', p_lead_source: 'OLX' })));
+const nos = par.map(r => r.invoice_no).sort((a, b) => a - b);
+ok(new Set(nos).size === 6 && nos.at(-1) - nos[0] === 5 && nos[0] === before6, '6 sales at the same time from two phones get 6 different, consecutive invoice numbers', nos.join(','));
+let dupInv = null; try { await db.query(`insert into public.invoices (no, issued_on) values ($1, current_date)`, [nos[0]]); } catch (e) { dupInv = e.message; }
+ok(dupInv && /duplicate key/.test(dupInv), 'the database refuses a repeated invoice number');
+const eLow = await rpcErr(U.admin, 'save_settings', { p_shop_name: 'First Choice Laptops', p_phone: '', p_addr: '', p_default_warranty_months: 6, p_old_days: 60, p_cloud_name: '', p_upload_preset: '', p_invoice_next: nos[0] });
+ok(eLow && /already used/.test(eLow.message), 'the next invoice number cannot be set to one already used');
+const bkI = await rpc(U.admin, 'sell_laptops_bulk', { p_laptop_ids: idsI.slice(6, 8), p_price_each: 12000, p_total_paid: 24000, p_method: 'Cash', p_mobile: '9800000088', p_name: 'Kalu', p_note: 'dealer cash' });
+eq((await one(`select count(distinct invoice_no) n, count(*) c from public.sales where bulk_group = $1`, [bkI.bulk_group])).n, 1, 'a bulk sale is one bill (one invoice number)');
+
+console.log('\nWarranty QR');
+const wl = await rpc(U.admin, 'create_lot', { p_supplier_id: sup.id, p_lot_no: 7, p_bought_on: '2026-09-01', p_lines: [{ brand: 'HP', model: '240 G3', processor: 'i3', gen: 4, ram_gb: 8, storage_type: 'HDD', storage_gb: 320, qty: 1, cost: 6000 }] });
+const LW = await lap(wl.codes[0]); await passAll(U.admin, LW.id);
+const sW = await rpc(U.coadmin, 'sell_laptop', { p_laptop_id: LW.id, p_price: 8300, p_paid: 8300, p_method: 'Cash', p_lead_source: 'Walk-in', p_name: 'Secret Customer', p_mobile: '9876500000',
+  p_sold_on: '2026-10-04', p_warranty_months: 3, p_accessory_warranty_months: 12, p_note: 'paid at counter' });
+ok(/^[0-9a-f]{64}$/.test(sW.warranty_token), 'every sale gets a long random warranty token (64 characters)');
+const asService = async (sql, p) => { await db.exec('set role service_role'); try { return (await db.query(sql, p)).rows[0].r; } finally { await db.exec('reset role'); } };
+const wr = await asService(`select public.warranty_lookup($1, 'phone-1') r`, [sW.warranty_token]);
+eq(wr.laptop_warranty_end, '2027-01-04', 'laptop warranty end = bill date 04-10-2026 + 3 months = 04-01-2027');
+eq(wr.accessory_warranty_end, '2027-10-04', 'charger and battery warranty end = bill date + 12 months');
+ok(wr.invoice_no === `INV-${sW.invoice_no}` && wr.code === LW.code && wr.laptop === 'HP i3 4th 8/320 HDD 240 G3' && wr.status === 'Valid', 'warranty check shows invoice, laptop, sticker code and status', JSON.stringify(wr));
+const allowed = ['business', 'invoice_no', 'laptop', 'code', 'bill_date', 'laptop_warranty_end', 'accessory_warranty_end', 'laptop_status', 'accessory_status', 'status'];
+ok(Object.keys(wr).every(k => allowed.includes(k)) && !/Secret Customer|98765|8300|8,300|counter/.test(JSON.stringify(wr)), 'warranty check returns no customer name, mobile, price or payments');
+eq((await asService(`select public.warranty_lookup($1, 'phone-1') r`, ['0'.repeat(64)])).error, 'not_found', 'a wrong token returns "not found"');
+eq((await asService(`select public.warranty_lookup($1, 'phone-1') r`, ['abc'])).error, 'not_found', 'a malformed token returns "not found"');
+let wDenied = null; try { await as(U.admin, `select public.warranty_lookup($1, 'x')`, [sW.warranty_token]); } catch (e) { wDenied = e.message; }
+ok(wDenied && /permission denied/.test(wDenied), 'the app itself cannot call the warranty lookup (only the warranty-check function can)');
+let rl; for (let i = 0; i < 21; i++) rl = await asService(`select public.warranty_lookup($1, 'phone-2') r`, [sW.warranty_token]);
+eq(rl.error, 'rate_limited', 'more than 20 checks in 10 minutes from one phone are refused');
+eq((await rpc(U.staff, 'find_by_warranty_token', { p_token: sW.warranty_token })).code, LW.code, 'scanning the bill\'s warranty QR in the app opens that laptop');
+const ii = await rpc(U.staff, 'issue_invoice', { p_sale_id: sW.sale_id });
+eq(ii.invoice_no, sW.invoice_no, 'printing the bill again keeps the same invoice number');
+
+console.log('\nNotes on every money movement');
+const lotN = await rpc(U.admin, 'create_lot', { p_supplier_id: sup.id, p_lot_no: 8, p_bought_on: today, p_lines: [{ is_mixed: true, qty: 3, cost: 30000 }] });
+for (const c of lotN.codes) await passAll(U.admin, (await lap(c)).id);
+const L20 = await lap(lotN.codes[0]);
+const noteOf = async (tab, where, p) => (await one(`select note from public.${tab} where ${where} order by created_at desc limit 1`, p)).note;
+eq(await noteOf('sale_payments', 'sale_id = $1', [sW.sale_id]), 'paid at counter', 'payment at sale');
+const bNote = await rpc(U.staff, 'book_laptop', { p_laptop_id: (await lap(lotS.codes[2])).id, p_mobile: '9800000077', p_lead_source: 'OLX', p_advance: 1000, p_method: 'UPI', p_ref: 'UTR1', p_note: 'advance by GPay' });
+eq(await noteOf('booking_payments', 'booking_id = $1', [bNote.booking_id]), 'advance by GPay', 'booking advance');
+await rpc(U.coadmin, 'cancel_booking', { p_booking_id: bNote.booking_id, p_refund: true, p_note: 'refunded in cash' });
+eq(await noteOf('refunds', 'booking_id = $1', [bNote.booking_id]), 'refunded in cash', 'refund of an advance');
+const s5n = (await rpc(U.admin, 'get_laptop', { p_code: L5.code })).sale;
+eq((await one(`select count(*) n from public.sale_payments where sale_id = $1`, [s5n.id])).n >= 1, true, 'booking-carried payments still present');
+const bulkNote = await one(`select note from public.sale_payments p join public.sales s on s.id = p.sale_id where s.bulk_group = $1 limit 1`, [bkI.bulk_group]);
+eq(bulkNote.note, 'dealer cash', 'bulk sale payment');
+await rpc(U.admin, 'sell_laptop', { p_laptop_id: L20.id, p_price: 20000, p_paid: 5000, p_method: 'Cash', p_lead_source: 'OLX', p_mobile: '9800000066', p_note: 'first part' });
+const s20 = (await rpc(U.admin, 'get_laptop', { p_code: L20.code })).sale;
+await rpc(U.coadmin, 'add_sale_payment', { p_sale_id: s20.id, p_amount: 2000, p_method: 'UPI', p_ref: 'UTR2', p_note: 'second part' });
+await rpc(U.coadmin, 'receive_customer_payment', { p_mobile: '9800000066', p_amount: 3000, p_method: 'Cash', p_note: 'third part' });
+const p20 = (await rpc(U.coadmin, 'get_laptop', { p_code: L20.code })).sale.payments.map(p => p.note);
+eq(p20.join('|'), 'first part|second part|third part', 'customer payments: at sale, added later, received for the customer (shown under each payment)');
+await rpc(U.admin, 'pay_supplier', { p_supplier_id: sup.id, p_amount: 1000, p_method: 'Bank', p_ref: 'NEFT', p_note: 'part of lot 6' });
+ok((await rpc(U.admin, 'get_snapshot')).suppliers.find(x => x.id === sup.id).payments.some(p => p.note === 'part of lot 6'), 'supplier payment (on the supplier page)');
+const dN = await rpc(U.admin, 'add_debt', { p_name: 'Loan from Salim', p_type: 'Borrowed', p_amount: 10000 });
+await rpc(U.admin, 'pay_debt', { p_debt_id: dN.debt_id, p_amount: 2000, p_method: 'Cash', p_note: 'first instalment' });
+ok((await rpc(U.admin, 'get_snapshot')).debts.find(x => x.id === dN.debt_id).payments.some(p => p.note === 'first instalment'), 'debt payment (in Liabilities)');
+await rpc(U.admin, 'add_shop_expense', { p_type: 'Transport', p_amount: 300, p_method: 'Cash', p_note: 'auto to SP Road' });
+await rpc(U.coadmin, 'add_lot_expense', { p_lot_id: lotI.lot_id, p_type: 'SSD', p_count: 2, p_amount: 3600, p_method: 'UPI', p_note: 'from SP Road' });
+const gN = await rpc(U.staff, 'give_for_service', { p_laptop_id: (await lap(lotN.codes[1])).id, p_partner_id: pt.partner_id, p_issues: ['Battery'] });
+await rpc(U.admin, 'receive_from_service', { p_job_id: gN.job_id, p_outcome: 'fixed', p_charge: 500, p_paid_now: true, p_method: 'UPI', p_note: 'paid on the spot' });
+ok((await rpc(U.admin, 'partner_detail', { p_partner_id: pt.partner_id })).money.payments.some(p => p.note === 'paid on the spot'), 'service partner payment (on the partner page)');
+const mN = await rpc(U.admin, 'money_day', { p_date: today });
+for (const [n, what] of [['part of lot 6', 'supplier'], ['first instalment', 'debt'], ['auto to SP Road', 'shop expense'], ['from SP Road', 'lot expense'], ['paid on the spot', 'service'], ['refunded in cash', 'refund']])
+  ok(mN.outs.some(x => x.n === n), `Today's money shows the note on the ${what} payment`);
+for (const n of ['second part', 'third part', 'advance by GPay', 'dealer cash']) ok(mN.ins.some(x => x.n === n), `Today's money shows the note "${n}"`);
+ok(!(await rpc(U.coadmin, 'money_day', { p_date: today })).outs.some(x => x.n === 'part of lot 6'), 'co-admin does not see notes on business payments');
+const actN = await one(`select message from public.activity_log where action = 'payment' order by id desc limit 1`);
+ok(/– third part$/.test(actN.message), 'Activity shows the note', actN.message);
+// editing a note later (admin only, amount never)
+const pid = (await rpc(U.admin, 'get_laptop', { p_code: L20.code })).sale.payments[1].id;
+ok(await rpcErr(U.coadmin, 'edit_payment_note', { p_kind: 'sale_payment', p_id: pid, p_note: 'x' }), 'co-admin cannot edit a note');
+await rpc(U.admin, 'edit_payment_note', { p_kind: 'sale_payment', p_id: pid, p_note: 'second part, GPay' });
+const after20 = (await rpc(U.admin, 'get_laptop', { p_code: L20.code })).sale.payments[1];
+ok(after20.note === 'second part, GPay' && +after20.amount === 2000, 'admin edits the note; the amount stays');
+ok(/from "second part" to "second part, GPay"/.test((await one(`select message from public.activity_log where action = 'note_edit' order by id desc limit 1`)).message), 'the edit is in Activity with the old text');
+let amtBlocked = false; try { await db.query(`update public.sale_payments set amount = 1 where id = $1`, [pid]); } catch (e) { amtBlocked = /cannot be changed/.test(e.message); }
+ok(amtBlocked, 'the amount of a payment still cannot be changed');
+for (const k of ['booking_payment', 'refund', 'supplier_payment', 'debt_payment', 'service_payment', 'shop_expense', 'lot_expense']) {
+  const row = await one(`select id from public.${{ booking_payment: 'booking_payments', refund: 'refunds', supplier_payment: 'supplier_payments', debt_payment: 'debt_payments', service_payment: 'service_payments', shop_expense: 'shop_expenses', lot_expense: 'lot_expenses' }[k]} where note <> '' limit 1`);
+  await rpc(U.admin, 'edit_payment_note', { p_kind: k, p_id: row.id, p_note: 'edited ' + k });
+}
+eq((await one(`select count(*) n from public.activity_log where action = 'note_edit'`)).n, 8, 'notes can be edited on all 8 kinds of money movement');
+
+console.log('\nExtra admin added from the SQL Editor');
+const addSql = (await db.query(`select private.admin_add_user_sql('Test Admin', '9123456780', '054321', 'admin') r`)).rows[0].r;
+ok(/^Added Test Admin as admin/.test(addSql), 'admin_add_user_sql adds the login', addSql);
+const au = await one(`select u.email, u.encrypted_password h, p.role, p.active, p.name from auth.users u join public.profiles p on p.id = u.id where p.mobile = '9123456780'`);
+ok(/^919123456780\.[0-9a-f]{8}@fcl\.local$/.test(au.email), 'hidden email with a random part', au.email);
+ok(au.h.startsWith('$2a$10$') && !au.h.includes('054321'), 'the PIN is stored only as a bcrypt hash');
+eq((await one(`select extensions.crypt('054321', $1) = $1 ok`, [au.h])).ok, true, 'PIN 054321 (with its leading 0) matches the hash');
+eq((await one(`select extensions.crypt('54321', $1) = $1 ok`, [au.h])).ok, false, 'PIN 54321 (zero lost) does not match');
+ok(au.role === 'admin' && au.active === true && au.name === 'Test Admin', 'profile: admin, active');
+eq((await one(`select count(*) n from auth.identities i join auth.users u on u.id = i.user_id where u.email = $1 and i.provider = 'email'`, [au.email])).n, 1, 'email identity created');
+ok(/^Nothing done/.test((await db.query(`select private.admin_add_user_sql('Test Admin', '9123456780', '054321', 'admin') r`)).rows[0].r), 'running it twice does nothing and says so');
+let addDenied = null; try { await as(U.admin, `select private.admin_add_user_sql('X', '9123456781', '111111', 'admin')`); } catch (e) { addDenied = e.message; }
+ok(addDenied && /permission denied/.test(addDenied), 'the app (even the admin) cannot call it');
+ok(await (async () => { try { await db.query(`select private.admin_add_user_sql('X', '9123456782', '12345', 'admin')`); return false; } catch (e) { return /exactly 6 digits/.test(e.message); } })(), 'a PIN without its leading 0 is refused');
+
 // session expiry and turned-off users
 await db.query(`update public.app_sessions set created_at = now() - interval '8 days' where user_id = $1`, [U.staff.id]);
 const eS = await rpcErr(U.staff, 'get_snapshot');
@@ -408,7 +516,7 @@ const eAnon = await (async () => { try { await db.exec(`set role anon`); await d
 ok(eAnon && /permission denied/.test(eAnon.message), 'not logged in: no access');
 // lead report and lot P&L
 const lr = await rpc(U.admin, 'lead_report', { p_year: +today.slice(0, 4) });
-ok(lr.some(x => x.lead_source === 'Dealer' && x.n === 3), 'lead report counts the 3 dealer sales');
+ok(lr.some(x => x.lead_source === 'Dealer' && x.n === 5), 'lead report counts the 5 dealer sales (3 + the 2 in the invoice test)');
 const pnl = await rpc(U.admin, 'lot_pnl');
 const p1 = pnl.find(x => x.prefix === `01-01-${MM}-${YY}`);
 ok(p1 && p1.status === 'Part sold' && p1.qty === 20, 'Lot P&L shows lot 1 as Part sold', JSON.stringify(p1));

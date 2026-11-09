@@ -1,7 +1,7 @@
 // Home: stock count and pips, money boxes, this month, alerts, search.
 import { $, esc, rs, stat, tag, sum, todayIN, fmtD } from '../ui/dom.js';
 import { ICON } from '../ui/icons.js';
-import { empty, confirmBox, guard, toast } from '../ui/feedback.js';
+import { empty, confirmBox, dialog, guard, toast } from '../ui/feedback.js';
 import { S, load, isAdmin, isMgr, role } from '../api/store.js';
 import { read, write } from '../api/client.js';
 import { owned, atService, ageDays, oldDays, lapList, matches, testsPassed } from './common.js';
@@ -51,9 +51,10 @@ export const views = {
 export const actions = {
   async settleAdvance(id, refund) {
     const h = S.d.held_advances.find(x => x.booking_id === id);
-    if (!await confirmBox(refund ? `Refund ${rs(h.advance)} to ${esc(h.name)}?` : `Keep the advance of ${rs(h.advance)}?`,
-      refund ? 'It shows as money out today.' : 'The money stays with the shop.', refund ? 'Refund' : 'Keep')) return;
-    await guard(async () => { await write('settle_held_advance', { p_booking_id: id, p_refund: refund }); await load(); toast(refund ? 'Advance refunded' : 'Advance kept', 'ok'); });
+    let note = '';
+    if (refund) { note = await dialog({ title: `Refund ${rs(h.advance)} to ${esc(h.name)}?`, body: 'It shows as money out today.', ok: 'Refund', text: true, placeholder: 'Note (optional)' }); if (note === null) return; }
+    else if (!await confirmBox(`Keep the advance of ${rs(h.advance)}?`, 'The money stays with the shop.', 'Keep')) return;
+    await guard(async () => { await write('settle_held_advance', { p_booking_id: id, p_refund: refund, p_note: note }); await load(); toast(refund ? 'Advance refunded' : 'Advance kept', 'ok'); });
   },
   async doSearch() {
     const q = ($('q').value || '').trim().toLowerCase(); if (!q) return;

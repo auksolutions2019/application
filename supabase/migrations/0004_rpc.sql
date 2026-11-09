@@ -195,8 +195,42 @@ begin
   return jsonb_build_object('id', v_id, 'code', v_code);
 end $$;
 
+-- Functions whose arguments changed are dropped first, so re-running this file never leaves an old version behind.
+do $$
+declare r record;
+begin
+  for r in select p.oid::regprocedure sig from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+           where (n.nspname = 'private' and p.proname in ('do_sell', 'refund_advance'))
+              or (n.nspname = 'public' and p.proname in ('sell_laptop', 'complete_booking', 'sell_laptops_bulk', 'add_sale_payment',
+                  'receive_customer_payment', 'book_laptop', 'cancel_booking', 'settle_held_advance', 'return_sale',
+                  'pay_supplier', 'pay_debt', 'save_settings'))
+  loop
+    execute 'drop function ' || r.sig;
+  end loop;
+end $$;
+
+-- Long random token behind the warranty QR on a bill (64 hex characters, from the database's secure random source).
+create or replace function private.new_token() returns text
+language sql volatile set search_path = '' as $$
+  select replace(gen_random_uuid()::text || gen_random_uuid()::text, '-', '')
+$$;
+
+-- Next invoice number. The settings row is locked while it counts up, so two phones can never get the same number,
+-- and invoices.no is a primary key on top of that.
+create or replace function private.next_invoice(p_date date, p_group uuid) returns int
+language plpgsql set search_path = '' as $$
+declare v_no int;
+begin
+  update public.settings set invoice_next = invoice_next + 1 where id = 1 returning invoice_next - 1 into v_no;
+  if exists (select 1 from public.invoices where no = v_no) then
+    raise exception 'Invoice number INV-% is already used. Ask the admin to set the next invoice number in Settings.', v_no;
+  end if;
+  insert into public.invoices (no, issued_on, bulk_group) values (v_no, p_date, p_group);
+  return v_no;
+end $$;
+
 -- Pay a booking's whole advance back, by the method it was paid in.
-create or replace function private.refund_advance(b public.bookings) returns numeric
+create or replace function private.refund_advance(b public.bookings, p_note text default '') returns numeric
 language plpgsql set search_path = '' as $$
 declare v_adv numeric; v_method text; v_code text;
 begin
@@ -204,9 +238,9 @@ begin
   if v_adv = 0 then return 0; end if;
   select method into v_method from public.booking_payments where booking_id = b.id order by paid_on, created_at limit 1;
   select code into v_code from public.laptops where id = b.laptop_id;
-  insert into public.refunds (booking_id, refunded_on, amount, method, note)
+  insert into public.refunds (booking_id, refunded_on, amount, method, label, note)
   values (b.id, private.today(), v_adv, v_method,
-          format('Advance back to %s for %s', private.cust_label(b.customer_name, b.lead_source), v_code));
+          format('Advance back to %s for %s', private.cust_label(b.customer_name, b.lead_source), v_code), btrim(coalesce(p_note, '')));
   return v_adv;
 end $$;
 
@@ -221,20 +255,31 @@ begin
   end if;
 end $$;
 
+-- Warranty months: the given value, or the shop default when there is a mobile to attach it to.
+create or replace function private.pick_warranty(p_given int, p_default int, p_mobile text, p_what text) returns int
+language plpgsql immutable set search_path = '' as $$
+declare v int := coalesce(p_given, case when p_mobile is null then 0 else p_default end, 0);
+begin
+  if v not between 0 and 60 then raise exception '% warranty must be between 0 and 60 months', p_what; end if;
+  if v > 0 and p_mobile is null then raise exception 'Enter the mobile number to give a warranty'; end if;
+  return v;
+end $$;
+
 -- Core of a single sale (also used to complete a booking).
 create or replace function private.do_sell(
   p_laptop_id uuid, p_name text, p_mobile text, p_address text, p_lead text, p_type text,
   p_price numeric, p_paid numeric, p_method text, p_ref text, p_sold_on date, p_warranty int,
-  p_ex_model text, p_ex_value numeric, p_override boolean
+  p_ex_model text, p_ex_value numeric, p_override boolean, p_acc_warranty int default null, p_note text default ''
 ) returns jsonb
 language plpgsql set search_path = '' as $$
 declare
   v_role text := private.require_user();
-  l public.laptops; bk public.bookings;
+  l public.laptops; bk public.bookings; st public.settings;
   v_adv numeric := 0; v_paid numeric := coalesce(p_paid, 0); v_exv numeric := nullif(coalesce(p_ex_value, 0), 0);
-  v_date date := coalesce(p_sold_on, private.today()); v_warr int; v_cust uuid; v_sale uuid; v_ex jsonb; v_total numeric;
+  v_date date := coalesce(p_sold_on, private.today()); v_warr int; v_acc int; v_cust uuid; v_sale uuid; v_ex jsonb; v_total numeric;
   v_mobile text := private.norm_mobile(p_mobile); v_name text := btrim(coalesce(p_name, ''));
   v_lead text := p_lead; v_type text := coalesce(p_type, 'Retail'); v_addr text := btrim(coalesce(p_address, ''));
+  v_inv int; v_token text := private.new_token();
 begin
   select * into l from public.laptops where id = p_laptop_id for update;
   if not found then raise exception 'Laptop not found.'; end if;
@@ -259,14 +304,9 @@ begin
   if v_paid > 0 then perform private.check_amount(v_paid); perform private.check_method(p_method); end if;
   if v_date > private.today() then raise exception 'The sale date cannot be in the future'; end if;
 
-  if p_warranty is null then        -- default warranty only when there is a mobile to attach it to
-    select case when v_mobile is null then 0 else s.default_warranty_months end into v_warr from public.settings s;
-  else
-    v_warr := p_warranty;
-  end if;
-  v_warr := coalesce(v_warr, 0);
-  if v_warr not between 0 and 60 then raise exception 'Warranty must be between 0 and 60 months'; end if;
-  if v_warr > 0 and v_mobile is null then raise exception 'Enter the mobile number to give a warranty'; end if;
+  select * into st from public.settings where id = 1;
+  v_warr := private.pick_warranty(p_warranty, st.default_warranty_months, v_mobile, 'Laptop');
+  v_acc := private.pick_warranty(p_acc_warranty, st.accessory_warranty_months, v_mobile, 'Charger and battery');
 
   -- staff never sees the floor, so a price below it is refused instead of confirmed
   if v_role = 'staff' and p_price < coalesce(round(private.full_cost(l.id), 0), 0) then
@@ -298,14 +338,15 @@ begin
   end if;
 
   v_cust := private.upsert_customer(v_mobile, v_name, v_addr, v_type);
+  if current_setting('app.no_invoice', true) is distinct from 'on' then v_inv := private.next_invoice(v_date, null); end if;
   insert into public.sales (laptop_id, customer_id, customer_name, customer_address, lead_source, customer_type,
-                            sold_on, price, warranty_months, booking_id)
-  values (l.id, v_cust, v_name, v_addr, v_lead, v_type, v_date, p_price, v_warr, bk.id)
+                            sold_on, price, warranty_months, accessory_warranty_months, booking_id, invoice_no, warranty_token)
+  values (l.id, v_cust, v_name, v_addr, v_lead, v_type, v_date, p_price, v_warr, v_acc, bk.id, v_inv, v_token)
   returning id into v_sale;
 
   if bk.id is not null then
-    insert into public.sale_payments (sale_id, paid_on, amount, method, ref, booking_payment_id)
-    select v_sale, bp.paid_on, bp.amount, bp.method, bp.ref, bp.id
+    insert into public.sale_payments (sale_id, paid_on, amount, method, ref, note, booking_payment_id)
+    select v_sale, bp.paid_on, bp.amount, bp.method, bp.ref, bp.note, bp.id
     from public.booking_payments bp where bp.booking_id = bk.id order by bp.paid_on, bp.created_at;
     update public.bookings set status = 'completed' where id = bk.id;
   end if;
@@ -317,14 +358,15 @@ begin
   end if;
 
   if v_paid > 0 then
-    insert into public.sale_payments (sale_id, paid_on, amount, method, ref)
-    values (v_sale, v_date, v_paid, p_method, btrim(coalesce(p_ref, '')));
+    insert into public.sale_payments (sale_id, paid_on, amount, method, ref, note)
+    values (v_sale, v_date, v_paid, p_method, btrim(coalesce(p_ref, '')), btrim(coalesce(p_note, '')));
   end if;
 
   update public.laptops set status = 'sold' where id = l.id;
 
   return jsonb_build_object('sale_id', v_sale, 'code', l.code, 'price', p_price,
-    'paid', v_total, 'balance', p_price - v_total, 'exchange_code', v_ex ->> 'code');
+    'paid', v_total, 'balance', p_price - v_total, 'exchange_code', v_ex ->> 'code',
+    'invoice_no', v_inv, 'warranty_token', v_token);
 end $$;
 
 -- =====================================================================
@@ -586,7 +628,8 @@ create or replace function public.sell_laptop(
   p_paid numeric default 0, p_method text default 'Cash', p_ref text default '',
   p_sold_on date default null, p_warranty_months int default null,
   p_exchange_model text default null, p_exchange_value numeric default null,
-  p_override_tests boolean default false, p_client_ref uuid default null
+  p_override_tests boolean default false, p_client_ref uuid default null,
+  p_accessory_warranty_months int default null, p_note text default ''
 ) returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v jsonb;
 begin
@@ -594,7 +637,7 @@ begin
   v := private.idem_get(p_client_ref); if v is not null then return v; end if;
   v := private.do_sell(p_laptop_id, p_name, p_mobile, p_address, p_lead_source, p_customer_type,
                        p_price, p_paid, p_method, p_ref, p_sold_on, p_warranty_months,
-                       p_exchange_model, p_exchange_value, p_override_tests);
+                       p_exchange_model, p_exchange_value, p_override_tests, p_accessory_warranty_months, p_note);
   return private.idem_put(p_client_ref, v);
 end $$;
 
@@ -605,7 +648,8 @@ create or replace function public.complete_booking(
   p_paid numeric default 0, p_method text default 'Cash', p_ref text default '',
   p_sold_on date default null, p_warranty_months int default null,
   p_exchange_model text default null, p_exchange_value numeric default null,
-  p_override_tests boolean default false, p_client_ref uuid default null
+  p_override_tests boolean default false, p_client_ref uuid default null,
+  p_accessory_warranty_months int default null, p_note text default ''
 ) returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v jsonb; v_laptop uuid;
 begin
@@ -615,7 +659,7 @@ begin
   if v_laptop is null then raise exception 'This booking is no longer open.'; end if;
   v := private.do_sell(v_laptop, p_name, p_mobile, p_address, p_lead_source, p_customer_type,
                        p_price, p_paid, p_method, p_ref, p_sold_on, p_warranty_months,
-                       p_exchange_model, p_exchange_value, p_override_tests);
+                       p_exchange_model, p_exchange_value, p_override_tests, p_accessory_warranty_months, p_note);
   return private.idem_put(p_client_ref, v);
 end $$;
 
@@ -623,10 +667,11 @@ create or replace function public.sell_laptops_bulk(
   p_laptop_ids uuid[], p_price_each numeric, p_lead_source text default 'Dealer', p_customer_type text default 'Dealer',
   p_name text default '', p_mobile text default '', p_address text default '',
   p_total_paid numeric default 0, p_method text default 'Cash', p_ref text default '',
-  p_warranty_months int default null, p_override_tests boolean default false, p_client_ref uuid default null
+  p_warranty_months int default null, p_override_tests boolean default false, p_client_ref uuid default null,
+  p_accessory_warranty_months int default null, p_note text default ''
 ) returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
-  v_role text := private.require_user(); v jsonb; v_n int; v_found int; v_list text;
+  v_role text := private.require_user(); v jsonb; v_n int; v_found int; v_list text; v_acc int; v_inv int; st public.settings;
   v_paid numeric := coalesce(p_total_paid, 0); v_left numeric; v_total numeric;
   v_cust uuid; v_grp uuid := gen_random_uuid(); v_warr int; v_today date := private.today();
   v_id uuid; v_sale uuid; v_p numeric; v_mobile text := private.norm_mobile(p_mobile);
@@ -672,37 +717,35 @@ begin
   if v_paid > v_total then raise exception 'Paid is more than total %', private.rs(v_total); end if;
   if v_paid < v_total and v_mobile is null then raise exception 'Enter the mobile number when money is still due'; end if;
 
-  if p_warranty_months is null then
-    select case when v_mobile is null then 0 else default_warranty_months end into v_warr from public.settings;
-  else
-    v_warr := p_warranty_months;
-  end if;
-  v_warr := coalesce(v_warr, 0);
-  if v_warr > 0 and v_mobile is null then raise exception 'Enter the mobile number to give a warranty'; end if;
+  select * into st from public.settings where id = 1;
+  v_warr := private.pick_warranty(p_warranty_months, st.default_warranty_months, v_mobile, 'Laptop');
+  v_acc := private.pick_warranty(p_accessory_warranty_months, st.accessory_warranty_months, v_mobile, 'Charger and battery');
 
   v_cust := private.upsert_customer(v_mobile, p_name, p_address, p_customer_type);
+  v_inv := private.next_invoice(v_today, v_grp);          -- one bill for the whole bulk sale
   v_left := v_paid;
   foreach v_id in array p_laptop_ids loop            -- the payment is shared in the order ticked
     insert into public.sales (laptop_id, customer_id, customer_name, customer_address, lead_source, customer_type,
-                              sold_on, price, warranty_months, bulk_group)
+                              sold_on, price, warranty_months, accessory_warranty_months, bulk_group, invoice_no, warranty_token)
     values (v_id, v_cust, btrim(coalesce(p_name, '')), btrim(coalesce(p_address, '')), p_lead_source, p_customer_type,
-            v_today, p_price_each, v_warr, v_grp)
+            v_today, p_price_each, v_warr, v_acc, v_grp, v_inv, private.new_token())
     returning id into v_sale;
     v_p := least(v_left, p_price_each);
     if v_p > 0 then
-      insert into public.sale_payments (sale_id, paid_on, amount, method, ref)
-      values (v_sale, v_today, v_p, p_method, btrim(coalesce(p_ref, '')));
+      insert into public.sale_payments (sale_id, paid_on, amount, method, ref, note)
+      values (v_sale, v_today, v_p, p_method, btrim(coalesce(p_ref, '')), btrim(coalesce(p_note, '')));
       v_left := v_left - v_p;
     end if;
     update public.laptops set status = 'sold' where id = v_id;
   end loop;
 
-  v := jsonb_build_object('count', v_n, 'total', v_total, 'paid', v_paid, 'balance', v_total - v_paid, 'bulk_group', v_grp);
+  v := jsonb_build_object('count', v_n, 'total', v_total, 'paid', v_paid, 'balance', v_total - v_paid, 'bulk_group', v_grp, 'invoice_no', v_inv);
   return private.idem_put(p_client_ref, v);
 end $$;
 
 create or replace function public.add_sale_payment(
-  p_sale_id uuid, p_amount numeric, p_method text default 'Cash', p_ref text default '', p_client_ref uuid default null
+  p_sale_id uuid, p_amount numeric, p_method text default 'Cash', p_ref text default '', p_client_ref uuid default null,
+  p_note text default ''
 ) returns jsonb language plpgsql security definer set search_path = '' as $$
 declare s public.sales; v jsonb; v_bal numeric;
 begin
@@ -714,15 +757,16 @@ begin
   perform private.check_method(p_method);
   v_bal := s.price - private.sale_paid(s.id);
   if p_amount > v_bal then raise exception 'That is more than the balance of %', private.rs(v_bal); end if;
-  insert into public.sale_payments (sale_id, paid_on, amount, method, ref)
-  values (s.id, private.today(), p_amount, p_method, btrim(coalesce(p_ref, '')));
+  insert into public.sale_payments (sale_id, paid_on, amount, method, ref, note)
+  values (s.id, private.today(), p_amount, p_method, btrim(coalesce(p_ref, '')), btrim(coalesce(p_note, '')));
   v := jsonb_build_object('paid', s.price - v_bal + p_amount, 'balance', v_bal - p_amount);
   return private.idem_put(p_client_ref, v);
 end $$;
 
 -- One payment from a customer, oldest balance cleared first.
 create or replace function public.receive_customer_payment(
-  p_mobile text, p_amount numeric, p_method text default 'Cash', p_ref text default '', p_client_ref uuid default null
+  p_mobile text, p_amount numeric, p_method text default 'Cash', p_ref text default '', p_client_ref uuid default null,
+  p_note text default ''
 ) returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v jsonb; v_cust uuid; v_due numeric := 0; v_left numeric; v_p numeric; r record; v_applied jsonb := '[]';
 begin
@@ -747,8 +791,8 @@ begin
   loop
     exit when v_left <= 0;
     v_p := least(v_left, r.due);
-    insert into public.sale_payments (sale_id, paid_on, amount, method, ref)
-    values (r.id, private.today(), v_p, p_method, btrim(coalesce(p_ref, '')));
+    insert into public.sale_payments (sale_id, paid_on, amount, method, ref, note)
+    values (r.id, private.today(), v_p, p_method, btrim(coalesce(p_ref, '')), btrim(coalesce(p_note, '')));
     v_applied := v_applied || jsonb_build_object('code', r.code, 'amount', v_p);
     v_left := v_left - v_p;
   end loop;
@@ -762,7 +806,7 @@ create or replace function public.book_laptop(
   p_laptop_id uuid, p_mobile text, p_lead_source text, p_customer_type text default 'Retail',
   p_name text default '', p_address text default '', p_agreed_price numeric default null,
   p_advance numeric default 0, p_method text default 'Cash', p_ref text default '',
-  p_booked_on date default null, p_client_ref uuid default null
+  p_booked_on date default null, p_client_ref uuid default null, p_note text default ''
 ) returns jsonb language plpgsql security definer set search_path = '' as $$
 declare l public.laptops; v jsonb; v_cust uuid; v_id uuid; v_adv numeric := coalesce(p_advance, 0);
         v_date date := coalesce(p_booked_on, private.today());
@@ -787,15 +831,16 @@ begin
   values (l.id, v_cust, btrim(coalesce(p_name, '')), btrim(coalesce(p_address, '')), p_lead_source, p_customer_type, v_date, p_agreed_price)
   returning id into v_id;
   if v_adv > 0 then
-    insert into public.booking_payments (booking_id, paid_on, amount, method, ref)
-    values (v_id, v_date, v_adv, p_method, btrim(coalesce(p_ref, '')));
+    insert into public.booking_payments (booking_id, paid_on, amount, method, ref, note)
+    values (v_id, v_date, v_adv, p_method, btrim(coalesce(p_ref, '')), btrim(coalesce(p_note, '')));
   end if;
   update public.laptops set status = 'booked' where id = l.id;
   return private.idem_put(p_client_ref, jsonb_build_object('booking_id', v_id, 'advance', v_adv));
 end $$;
 
 -- Staff may cancel but never refund: the advance is then "held" until admin/co-admin decides (settle_held_advance).
-create or replace function public.cancel_booking(p_booking_id uuid, p_refund boolean default false, p_client_ref uuid default null)
+create or replace function public.cancel_booking(p_booking_id uuid, p_refund boolean default false, p_client_ref uuid default null,
+                                                 p_note text default '')
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_role text := private.require_user(); b public.bookings; v jsonb; v_adv numeric; v_status text;
 begin
@@ -811,7 +856,7 @@ begin
                    when v_role = 'staff' then 'held'
                    when coalesce(p_refund, false) then 'refunded'
                    else 'kept' end;
-  if v_status = 'refunded' then perform private.refund_advance(b); end if;
+  if v_status = 'refunded' then perform private.refund_advance(b, p_note); end if;
   update public.bookings set status = 'cancelled', cancelled_on = private.today(), advance_status = v_status,
          advance_decided_by = case when v_status in ('refunded','kept') then auth.uid() end
   where id = b.id;
@@ -820,7 +865,8 @@ begin
 end $$;
 
 -- Admin / co-admin decides on an advance that staff left "held": refund it or keep it.
-create or replace function public.settle_held_advance(p_booking_id uuid, p_refund boolean, p_client_ref uuid default null)
+create or replace function public.settle_held_advance(p_booking_id uuid, p_refund boolean, p_client_ref uuid default null,
+                                                      p_note text default '')
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare b public.bookings; v jsonb; v_status text := case when p_refund then 'refunded' else 'kept' end;
 begin
@@ -829,7 +875,7 @@ begin
   if p_refund is null then raise exception 'Choose refund or keep'; end if;
   select * into b from public.bookings where id = p_booking_id for update;
   if not found or b.advance_status is distinct from 'held' then raise exception 'This advance is not waiting for a decision.'; end if;
-  if p_refund then perform private.refund_advance(b); end if;
+  if p_refund then perform private.refund_advance(b, p_note); end if;
   update public.bookings set advance_status = v_status, advance_decided_by = auth.uid() where id = b.id;
   return private.idem_put(p_client_ref, jsonb_build_object('advance_status', v_status));
 end $$;
@@ -855,9 +901,9 @@ begin
   values (s.id, s.laptop_id, private.today(), btrim(coalesce(p_note, '')))
   returning id into v_ret;
   if v_refund > 0 then
-    insert into public.refunds (return_id, refunded_on, amount, method, ref, note)
+    insert into public.refunds (return_id, refunded_on, amount, method, ref, label, note)
     values (v_ret, private.today(), v_refund, p_method, btrim(coalesce(p_ref, '')),
-            format('Refund to %s for %s', private.cust_label(s.customer_name, s.lead_source), v_code));
+            format('Refund to %s for %s', private.cust_label(s.customer_name, s.lead_source), v_code), btrim(coalesce(p_note, '')));
   end if;
   update public.sales set status = 'returned' where id = s.id;
   update public.laptops set status = 'in_stock' where id = s.laptop_id;
@@ -898,7 +944,8 @@ end $$;
 
 -- ---------- what the shop owes and spends (admin) ----------
 create or replace function public.pay_supplier(
-  p_supplier_id uuid, p_amount numeric, p_method text default 'Cash', p_ref text default '', p_client_ref uuid default null
+  p_supplier_id uuid, p_amount numeric, p_method text default 'Cash', p_ref text default '', p_client_ref uuid default null,
+  p_note text default ''
 ) returns jsonb language plpgsql security definer set search_path = '' as $$
 declare s public.suppliers; v jsonb; v_due numeric;
 begin
@@ -910,8 +957,8 @@ begin
   perform private.check_method(p_method);
   v_due := private.supplier_due(s.id);
   if v_due > 0 and p_amount > v_due then raise exception 'That is more than the balance of %', private.rs(v_due); end if;
-  insert into public.supplier_payments (supplier_id, paid_on, amount, method, ref)
-  values (s.id, private.today(), p_amount, p_method, btrim(coalesce(p_ref, '')));
+  insert into public.supplier_payments (supplier_id, paid_on, amount, method, ref, note)
+  values (s.id, private.today(), p_amount, p_method, btrim(coalesce(p_ref, '')), btrim(coalesce(p_note, '')));
   return private.idem_put(p_client_ref, jsonb_build_object('due', v_due - p_amount));
 end $$;
 
@@ -929,7 +976,8 @@ begin
 end $$;
 
 create or replace function public.pay_debt(
-  p_debt_id uuid, p_amount numeric, p_method text default 'Cash', p_ref text default '', p_client_ref uuid default null
+  p_debt_id uuid, p_amount numeric, p_method text default 'Cash', p_ref text default '', p_client_ref uuid default null,
+  p_note text default ''
 ) returns jsonb language plpgsql security definer set search_path = '' as $$
 declare d public.debts; v jsonb; v_bal numeric;
 begin
@@ -941,8 +989,8 @@ begin
   perform private.check_method(p_method);
   select d.amount - coalesce(sum(amount), 0) into v_bal from public.debt_payments where debt_id = d.id;
   if p_amount > v_bal then raise exception 'That is more than the balance of %', private.rs(v_bal); end if;
-  insert into public.debt_payments (debt_id, paid_on, amount, method, ref)
-  values (d.id, private.today(), p_amount, p_method, btrim(coalesce(p_ref, '')));
+  insert into public.debt_payments (debt_id, paid_on, amount, method, ref, note)
+  values (d.id, private.today(), p_amount, p_method, btrim(coalesce(p_ref, '')), btrim(coalesce(p_note, '')));
   return private.idem_put(p_client_ref, jsonb_build_object('balance', v_bal - p_amount));
 end $$;
 
@@ -1006,20 +1054,137 @@ begin
   end if;
 end $$;
 
+-- Anything left null keeps its current value.
 create or replace function public.save_settings(
   p_shop_name text, p_phone text, p_addr text, p_default_warranty_months int, p_old_days int,
-  p_cloud_name text, p_upload_preset text
+  p_cloud_name text, p_upload_preset text,
+  p_bill_name text default null, p_bill_email text default null, p_logo_url text default null,
+  p_bank_name text default null, p_bank_holder text default null, p_bank_account text default null, p_bank_ifsc text default null,
+  p_invoice_next int default null, p_accessory_warranty_months int default null
 ) returns void language plpgsql security definer set search_path = '' as $$
+declare v_max int;
 begin
   perform private.require_admin();
   if btrim(coalesce(p_shop_name, '')) = '' then raise exception 'Enter the shop name'; end if;
+  if p_logo_url is not null and p_logo_url <> '' and p_logo_url !~ '^https://res\.cloudinary\.com/[^\s"''<>]+$' then
+    raise exception 'The logo must be a Cloudinary https link';
+  end if;
+  if p_invoice_next is not null then
+    select max(no) into v_max from public.invoices;
+    if p_invoice_next < 1 then raise exception 'The next invoice number must be 1 or more'; end if;
+    if v_max is not null and p_invoice_next <= v_max then
+      raise exception 'INV-% is already used. The next invoice number must be above it.', v_max;
+    end if;
+  end if;
+  if coalesce(p_accessory_warranty_months, 0) not between 0 and 60 then raise exception 'Charger and battery warranty must be 0 to 60 months'; end if;
   update public.settings set
     shop_name = btrim(p_shop_name), phone = btrim(coalesce(p_phone, '')), addr = btrim(coalesce(p_addr, '')),
     default_warranty_months = coalesce(p_default_warranty_months, 0),
     old_days = coalesce(nullif(p_old_days, 0), 60),
     cloud_name = btrim(coalesce(p_cloud_name, '')), upload_preset = btrim(coalesce(p_upload_preset, '')),
+    bill_name = coalesce(btrim(p_bill_name), bill_name), bill_email = coalesce(btrim(p_bill_email), bill_email),
+    logo_url = coalesce(btrim(p_logo_url), logo_url), bank_name = coalesce(btrim(p_bank_name), bank_name),
+    bank_holder = coalesce(btrim(p_bank_holder), bank_holder), bank_account = coalesce(btrim(p_bank_account), bank_account),
+    bank_ifsc = coalesce(upper(btrim(p_bank_ifsc)), bank_ifsc), invoice_next = coalesce(p_invoice_next, invoice_next),
+    accessory_warranty_months = coalesce(p_accessory_warranty_months, accessory_warranty_months),
     updated_by = auth.uid()
   where id = 1;
+end $$;
+
+-- ---------- bills, notes, warranty check ----------
+-- Gives a sale (or its whole bulk sale) an invoice number and warranty token if it has none yet (sales from before bills).
+create or replace function public.issue_invoice(p_sale_id uuid)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare s public.sales; v_no int;
+begin
+  perform private.require_user();
+  select * into s from public.sales where id = p_sale_id for update;
+  if not found then raise exception 'Sale not found'; end if;
+  if s.invoice_no is null then
+    v_no := private.next_invoice(s.sold_on, s.bulk_group);
+    update public.sales set invoice_no = v_no
+    where (id = s.id or (s.bulk_group is not null and bulk_group = s.bulk_group)) and invoice_no is null;
+  end if;
+  update public.sales set warranty_token = private.new_token()
+  where (id = s.id or (s.bulk_group is not null and bulk_group = s.bulk_group)) and warranty_token is null;
+  select * into s from public.sales where id = p_sale_id;
+  return jsonb_build_object('invoice_no', s.invoice_no, 'issued_on', (select issued_on from public.invoices where no = s.invoice_no),
+                            'warranty_token', s.warranty_token);
+end $$;
+
+-- The admin may change the note on any payment or expense later, never the amount. The old text is kept in Activity.
+create or replace function public.edit_payment_note(p_kind text, p_id uuid, p_note text)
+returns void language plpgsql security definer set search_path = '' as $$
+declare v_tab text; v_old text; v_amt numeric; v_label text; v_admin_only boolean;
+begin
+  perform private.require_admin();
+  select t.tab, t.label, t.admin_only into v_tab, v_label, v_admin_only
+  from (values ('sale_payment', 'sale_payments', 'customer payment', false), ('booking_payment', 'booking_payments', 'advance', false),
+               ('refund', 'refunds', 'refund', false), ('supplier_payment', 'supplier_payments', 'supplier payment', true),
+               ('debt_payment', 'debt_payments', 'debt payment', true), ('service_payment', 'service_payments', 'service partner payment', true),
+               ('shop_expense', 'shop_expenses', 'shop expense', true), ('lot_expense', 'lot_expenses', 'lot expense', false)) t(kind, tab, label, admin_only)
+  where t.kind = p_kind;
+  if v_tab is null then raise exception 'Unknown payment type'; end if;
+  if length(coalesce(p_note, '')) > 300 then raise exception 'Keep the note under 300 characters'; end if;
+  execute format('select note, amount from public.%I where id = $1 for update', v_tab) into v_old, v_amt using p_id;
+  if v_amt is null then raise exception 'Payment not found'; end if;
+  if v_old is not distinct from btrim(coalesce(p_note, '')) then return; end if;
+  execute format('update public.%I set note = $2 where id = $1', v_tab) using p_id, btrim(coalesce(p_note, ''));
+  perform private.log('note_edit', p_kind, p_id::text,
+    format('Changed the note on a %s of %s from "%s" to "%s"', v_label, private.rs(abs(v_amt)), coalesce(v_old, ''), btrim(coalesce(p_note, ''))), v_admin_only);
+end $$;
+
+-- Scanning the warranty QR on a bill inside the app opens that laptop.
+create or replace function public.find_by_warranty_token(p_token text)
+returns jsonb language plpgsql stable security definer set search_path = '' as $$
+declare r text := private.require_user();
+begin
+  if coalesce(p_token, '') !~ '^[0-9a-f]{64}$' then return null; end if;
+  return (select private.laptop_json(s.laptop_id, r) from public.sales s where s.warranty_token = p_token);
+end $$;
+
+-- Public warranty check (called only by the warranty-check Edge Function with the service key).
+-- Returns only safe fields: never the customer, mobile, price or payments. Rate limited per caller and overall.
+create or replace function public.warranty_lookup(p_token text, p_client text default 'unknown')
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare s public.sales; st public.settings; l public.laptops; v_hits int; v_all int; v_bill date; v_lend date; v_aend date;
+        v_today date := private.today();
+begin
+  -- 20 checks per 10 minutes from one caller, 1000 per 10 minutes in total
+  insert into public.rate_limits (key, hits, window_start) values ('w:' || left(coalesce(p_client, 'unknown'), 80), 1, now())
+  on conflict (key) do update set hits = case when public.rate_limits.window_start < now() - interval '10 minutes' then 1 else public.rate_limits.hits + 1 end,
+                                  window_start = case when public.rate_limits.window_start < now() - interval '10 minutes' then now() else public.rate_limits.window_start end
+  returning hits into v_hits;
+  insert into public.rate_limits (key, hits, window_start) values ('w:all', 1, now())
+  on conflict (key) do update set hits = case when public.rate_limits.window_start < now() - interval '10 minutes' then 1 else public.rate_limits.hits + 1 end,
+                                  window_start = case when public.rate_limits.window_start < now() - interval '10 minutes' then now() else public.rate_limits.window_start end
+  returning hits into v_all;
+  if v_hits > 20 or v_all > 1000 then return jsonb_build_object('error', 'rate_limited'); end if;
+  delete from public.rate_limits where window_start < now() - interval '1 day';
+
+  if coalesce(p_token, '') !~ '^[0-9a-f]{64}$' then return jsonb_build_object('error', 'not_found'); end if;
+  select * into s from public.sales where warranty_token = p_token and status = 'active';
+  if not found then return jsonb_build_object('error', 'not_found'); end if;
+  select * into l from public.laptops where id = s.laptop_id;
+  select * into st from public.settings where id = 1;
+  v_bill := coalesce((select issued_on from public.invoices where no = s.invoice_no), s.sold_on);
+  v_lend := case when s.warranty_months > 0 then (v_bill + make_interval(months => s.warranty_months))::date end;
+  v_aend := case when s.accessory_warranty_months > 0 then (v_bill + make_interval(months => s.accessory_warranty_months))::date end;
+  return jsonb_build_object(
+    'business', coalesce(nullif(st.bill_name, ''), st.shop_name),
+    'invoice_no', case when s.invoice_no is not null then 'INV-' || s.invoice_no end,
+    'laptop', coalesce(nullif(concat_ws(' ', nullif(l.shorthand, ''), nullif(l.model, '')), ''), 'Laptop'),
+    'code', l.code,
+    'bill_date', v_bill,
+    'laptop_warranty_end', v_lend,
+    'accessory_warranty_end', v_aend,
+    'laptop_status', case when v_lend is null then 'No warranty' when v_lend >= v_today then 'Valid'
+                          else 'Expired on ' || to_char(v_lend, 'DD-MM-YYYY') end,
+    'accessory_status', case when v_aend is null then 'No warranty' when v_aend >= v_today then 'Valid'
+                             else 'Expired on ' || to_char(v_aend, 'DD-MM-YYYY') end,
+    'status', case when coalesce(v_lend, v_aend) is null then 'No warranty'
+                   when greatest(coalesce(v_lend, '-infinity'::date), coalesce(v_aend, '-infinity'::date)) >= v_today then 'Valid'
+                   else 'Expired on ' || to_char(greatest(coalesce(v_lend, '-infinity'::date), coalesce(v_aend, '-infinity'::date)), 'DD-MM-YYYY') end);
 end $$;
 
 -- ---------- first admin (run once from the SQL editor) ----------

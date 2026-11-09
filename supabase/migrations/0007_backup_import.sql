@@ -8,7 +8,7 @@
 -- Tables in load order (parents first).
 create or replace function private.backup_tables() returns text[] language sql immutable as $$
   select array['settings','suppliers','lots','lot_lines','lot_line_costs','laptops','laptop_costs','laptop_tests',
-    'lot_expenses','repairs','photos','customers','bookings','booking_payments','sales','sale_payments','returns',
+    'lot_expenses','repairs','photos','customers','bookings','booking_payments','invoices','sales','sale_payments','returns',
     'refunds','supplier_payments','debts','debt_payments','shop_expenses','model_prices','service_partners',
     'service_jobs','service_charges','service_payments','activity_log']
 $$;
@@ -257,7 +257,7 @@ begin
   where btrim(k) <> '' and v::numeric > 0
   on conflict (shorthand) do nothing;
 
-  insert into public.refunds (refunded_on, amount, method, note)
+  insert into public.refunds (refunded_on, amount, method, label)
   select (f ->> 'date')::date, round((f ->> 'amt')::numeric, 2), private.proto_method(f ->> 'method', false), coalesce(f ->> 'note', '')
   from jsonb_array_elements(coalesce(d -> 'refunds', '[]')) f where coalesce((f ->> 'amt')::numeric, 0) > 0;
 
@@ -332,6 +332,7 @@ begin
     raise exception 'This database already has lots or sales. The Excel import runs only once, on an empty database.';
   end if;
   perform set_config('app.no_log', 'on', true);
+  perform set_config('app.no_invoice', 'on', true);     -- old sales from the Excel get no invoice number
   create temp table if not exists _xl (key text primary key, lot uuid) on commit drop;
   delete from _xl;
 
@@ -388,6 +389,7 @@ begin
   end loop;
 
   perform set_config('app.no_log', 'off', true);
+  perform set_config('app.no_invoice', 'off', true);
   r := jsonb_build_object('lots', (select count(*) from _xl),
          'lines', (select count(*) from public.lot_lines ln join _xl on _xl.lot = ln.lot_id),
          'laptops', (select count(*) from public.laptops l join _xl on _xl.lot = l.lot_id),

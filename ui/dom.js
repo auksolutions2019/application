@@ -16,7 +16,12 @@ export const uuid = () => (crypto.randomUUID ? crypto.randomUUID()
 // Today in India, as YYYY-MM-DD
 export const todayIN = () => new Date(Date.now() + 5.5 * 3600e3).toISOString().slice(0, 10);
 export const daysSince = d => d ? Math.max(0, Math.round((new Date(todayIN()) - new Date(String(d).slice(0, 10))) / 864e5)) : 0;
-export const addMonths = (iso, m) => { const d = new Date(iso + 'T00:00:00'); d.setMonth(d.getMonth() + m); return d.getFullYear() + '-' + pad(d.getMonth() + 1, 2) + '-' + pad(d.getDate(), 2); };
+// Same rule as the database (date + interval): 31 Jan + 1 month = 28 Feb, so the bill and the warranty check agree
+export const addMonths = (iso, m) => {
+  const [y, mo, d] = String(iso).slice(0, 10).split('-').map(Number);
+  const t = new Date(Date.UTC(y, mo - 1 + m, 1)), last = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth() + 1, 0)).getUTCDate();
+  return t.getUTCFullYear() + '-' + pad(t.getUTCMonth() + 1, 2) + '-' + pad(Math.min(d, last), 2);
+};
 // code shown as a silver asset tag: supplier | lot | month | year | piece
 export const tag = (code, lg) => `<span class="tag${lg ? ' lg' : ''}">${String(code).split('-').map(p => `<i>${esc(p)}</i>`).join('')}</span>`;
 export const codeDigits = s => String(s || '').replace(/\D/g, '');

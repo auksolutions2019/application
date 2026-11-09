@@ -5,6 +5,7 @@ import { toast, empty, openSheet, sheetHead, closeModal, dialog, amountBox, guar
 import { S, load, isAdmin, isMgr } from '../api/store.js';
 import { read, write } from '../api/client.js';
 import { SKILLS } from '../ui/specs.js';
+import { noteLine } from './common.js';
 
 let openPartnerId = null;
 
@@ -31,7 +32,7 @@ async function renderPartner() {
   const msg = `Assalamu Alaikum ${d.name}, this is ${S.d.settings.shop_name}. These laptops are with you:\n${list}\nPlease update us on them. Thank you.`;
   const h = d.history;
   openSheet(`${sheetHead(esc(d.label), `${d.shop_name && d.name !== d.label ? esc(d.name) + ', ' : ''}${esc(d.mobile || 'no mobile')}${d.address ? ', ' + esc(d.address) : ''}`)}
-  <div class="badges">${(d.skills || []).map(s => `<span class="pill grey">${esc(s)}</span>`).join('')}</div>
+  <div class="badges" data-partner="${d.id}">${(d.skills || []).map(s => `<span class="pill grey">${esc(s)}</span>`).join('')}</div>
   <div class="row" style="margin-top:12px">${d.mobile ? `<a class="btnlink" style="background:var(--ice);color:var(--ink)" href="tel:${esc(d.mobile)}">${ICON.phone}Call</a><a class="btnlink" target="_blank" href="${esc(waLink(d.mobile, msg))}">${ICON.wa}WhatsApp</a>` : ''}
    ${adm && d.money?.owed > 0 ? `<button class="sm" onclick="A.payPartner('${d.id}')">Pay</button>` : ''}${isMgr() ? `<button class="sm ghost" onclick="A.formPartner('${d.id}')">Edit</button>` : ''}</div>
   <h3 class="sh">With them now (${d.with_them.length})</h3>
@@ -39,7 +40,8 @@ async function renderPartner() {
      <span class="pill ${j.overdue ? 'bad' : 'svc'}">${j.days_out} day${j.days_out === 1 ? '' : 's'}${j.overdue ? ', overdue' : ''}</span></div>`).join('') : '<p class="muted" style="padding:12px">Nothing with them right now.</p>'}</div>
   <h3 class="sh">History</h3>
   <div class="grid">${[['Sent', h.sent], ['Returned', h.returned], ['Fixed', h.fixed], ['Not fixed', h.not_fixed + h.no_work]].map(([t, v]) => `<div class="stat"><span>${t}</span><b>${v}</b></div>`).join('')}</div>
-  ${adm && d.money ? `<h3 class="sh">Money</h3><div class="list flat"><div class="kv" style="padding:9px 12px"><span>Service charges</span><b>${rs(d.money.charges)}</b></div><div class="kv" style="padding:9px 12px"><span>Paid</span><b>${rs(d.money.paid)}</b></div><div class="kv" style="padding:9px 12px;border:0"><span>Still owed</span><b style="color:${d.money.owed > 0 ? 'var(--red)' : 'var(--green)'}">${rs(d.money.owed)}</b></div></div>${d.charge_missing ? `<p class="muted" style="margin-top:6px">${d.charge_missing} job${d.charge_missing > 1 ? 's' : ''} still without a charge.</p>` : ''}` : ''}
+  ${adm && d.money ? `<h3 class="sh">Money</h3><div class="list flat"><div class="kv" style="padding:9px 12px"><span>Service charges</span><b>${rs(d.money.charges)}</b></div><div class="kv" style="padding:9px 12px"><span>Paid</span><b>${rs(d.money.paid)}</b></div><div class="kv" style="padding:9px 12px;border:0"><span>Still owed</span><b style="color:${d.money.owed > 0 ? 'var(--red)' : 'var(--green)'}">${rs(d.money.owed)}</b></div></div>${d.charge_missing ? `<p class="muted" style="margin-top:6px">${d.charge_missing} job${d.charge_missing > 1 ? 's' : ''} still without a charge.</p>` : ''}
+  ${d.money.payments?.length ? `<h3 class="sh">Payments</h3><div class="list flat">${d.money.payments.map(p => `<div class="lrow" style="cursor:default"><span class="cm">${fmtD(p.paid_on)}<span class="mtag">${esc(p.method)}</span>${p.ref ? `<span class="muted"> ${esc(p.ref)}</span>` : ''}${noteLine(p.note, 'service_payment', p.id)}</span><b>${rs(p.amount)}</b></div>`).join('')}</div>` : ''}` : ''}
   ${d.recent.length ? `<h3 class="sh">Recently returned</h3><div class="list flat">${d.recent.map(j => `<div class="lrow" style="cursor:default"><span class="cm">${tag(j.code)}<span class="muted" style="display:block;margin-top:4px">back ${fmtD(j.received_on)}, ${j.outcome === 'fixed' ? 'fixed' : j.outcome === 'not_fixed' ? 'not fixed' : 'no work'}${j.work_done ? ': ' + esc(j.work_done) : ''}</span></span>${adm ? (j.charge != null ? `<b>${rs(j.charge)}</b>` : '<span class="warnmark">charge missing</span>') : ''}</div>`).join('')}</div>` : ''}`,
   () => { openPartnerId = null; A.refresh(); });
 }

@@ -45,9 +45,9 @@ The file is safe to run again; every step checks first. Do not edit it by hand: 
    - Turn **off** "Confirm email".
 2. Under **Database → Publications → supabase_realtime**, check that the table **sync_ticks** is ticked (setup_all.sql adds it). This is what makes a sale on one phone show on the other.
 
-## 4. Deploy the three Edge Functions
+## 4. Deploy the four Edge Functions
 
-These handle the PIN login with its 5-try lock, PIN changes and user management. They are the only place the service key is used, and it stays inside Supabase.
+These handle the PIN login with its 5-try lock, PIN changes, user management, and the public warranty check behind the QR on bills. They are the only place the service key is used, and it stays inside Supabase.
 
 **Option A – Supabase CLI** (Windows PowerShell, inside this project folder; needs Node.js):
 
@@ -57,13 +57,14 @@ npx supabase link --project-ref YOUR-PROJECT-REF
 npx supabase functions deploy auth-login --no-verify-jwt --use-api
 npx supabase functions deploy change-pin --no-verify-jwt --use-api
 npx supabase functions deploy admin-users --no-verify-jwt --use-api
+npx supabase functions deploy warranty-check --no-verify-jwt --use-api
 ```
 
 - `supabase login` opens the browser: sign in with the dealer's Supabase account.
 - The project ref is the part of the Project URL before `.supabase.co`. It is also under **Project Settings → General**.
 - `--no-verify-jwt` is needed because each function checks the caller itself, and the login function is called before anyone is logged in.
 
-**Option B – Dashboard:** **Edge Functions → Deploy a new function → Via Editor**. Do this once for each of `auth-login`, `change-pin` and `admin-users`:
+**Option B – Dashboard:** **Edge Functions → Deploy a new function → Via Editor**. Do this once for each of `auth-login`, `change-pin`, `admin-users` and `warranty-check`:
 1. Use the folder name as the function name.
 2. Paste the file `supabase/functions/<name>/index.ts`.
 3. Click **Deploy**.
@@ -94,6 +95,31 @@ Another optional secret is `LOGIN_EMAIL_DOMAIN` (default `fcl.local`). It is the
    ```
    It answers "Admin Ayan created". It refuses to run once an admin exists.
 4. Everyone else (Raheem, workers) is added later from the app: **More → Users → Add a user**. There you pick the role: Co-admin or Staff.
+
+### 6b. Add an extra admin from the SQL Editor (private)
+
+Some admin logins are added straight from the SQL Editor, so their mobile number and PIN never appear in the app or in this repo.
+
+- **The file:** `supabase/private/add_admin.sql` is on the developer's computer only. The folder is in `.gitignore`, so it never goes to GitHub.
+- **Run it:**
+  1. Open it, copy all of it, paste it into the **SQL Editor** and click **Run**. This must be after step 2.
+  2. The answer reads "Added Admin as admin …".
+  3. If the mobile already has a login, it answers "Nothing done …" and changes nothing. That makes it safe to run twice.
+- **Then:**
+  1. **Delete the file** from the computer, so the PIN is not left lying around.
+  2. Log in on the phone with that mobile and PIN, and **change the PIN at once**: More → Change my PIN.
+
+For any later admin, type this in the SQL Editor (never save it in a file in this repo):
+
+```sql
+select private.admin_add_user_sql('Name', '9XXXXXXXXX', '0XXXXX', 'admin');
+```
+
+- **Values:** the 10-digit mobile and the 6-digit PIN.
+- **Quotes:** keep the PIN in quotes, so a leading 0 is not lost.
+- **Role:** `'admin'`, `'coadmin'` or `'staff'`.
+
+The function creates the Supabase Auth user. The hidden email has a random part, and the PIN is stored only as a bcrypt hash. It also creates the profile, and refuses a mobile that already has a login. Only the SQL Editor can run it; the app cannot. If Supabase ever refuses writing to its auth tables from SQL, add the person from the app instead: **More → Users**.
 
 ## 7. Put the Project URL and key into `config.js`
 
@@ -143,7 +169,30 @@ Free Supabase projects pause after 7 days without use. The GitHub Actions workfl
 - Check it once: on GitHub go to **Actions → Keep Supabase awake → Run workflow**. It should finish green and print `"ok 1"`.
 - If GitHub ever shows "This scheduled workflow is disabled", click **Enable workflow**.
 
-## 10. Photos (Cloudinary)
+## 10. Bills (invoice) and the warranty QR
+
+In the app, under **More → Settings → Bill (invoice)**, set these (they are saved in Supabase):
+
+- **Logo:** upload it (it goes to Cloudinary, so do step 11 first).
+- **Business name on bills and email.** The address and phone come from Shop details.
+- **Next invoice number:** `58` (the dealer's last paper bill was INV-57). Numbers come from a counter in the database, so two phones never get the same one.
+- **Default warranties:** laptop, and charger and battery (12 months).
+- **Payment instructions:** bank name, account holder, account number, IFSC.
+
+**Every bill:**
+- It gets the next INV number and a warranty QR next to each laptop's warranty text.
+- The QR opens `https://<your site>/w/?t=<code>`. That page shows only the business, invoice number, laptop, sticker code, bill date and warranty status. It never shows the customer, mobile, price or payments.
+- Warranty end dates count from the bill date.
+- Scanning that QR in the app's Scan screen opens the laptop.
+- The WhatsApp bill carries the same check link.
+
+Sales imported from the Excel get no invoice number; they get one the first time their bill is printed.
+
+**Notes:**
+- Every payment and expense has an optional **Note**, next to Ref / UTR, saved in Supabase.
+- The admin can change a note later by tapping ✎. The amount can never change, and the old note is kept in Activity.
+
+## 11. Photos (Cloudinary)
 
 1. Create a free account at cloudinary.com with the dealer's email. The **cloud name** is on the dashboard.
 2. Go to **Settings → Upload → Upload presets → Add upload preset**. Set **Signing mode: Unsigned** and save.
@@ -151,7 +200,7 @@ Free Supabase projects pause after 7 days without use. The GitHub Actions workfl
 
 Photos are shrunk to 1600 px (JPEG quality 0.8) on the phone before upload. Only the photo links are stored in Supabase.
 
-## 11. Bring in the old data (one time, before anything else)
+## 12. Bring in the old data (one time, before anything else)
 
 Log in as Ayan, then **More → Backup and import → Bring in old data**:
 
@@ -192,6 +241,7 @@ lib/          supabase.js, qrcode, jsQR, html5-qrcode, xlsx (bundled, no CDN), e
 api/          client.js (calls, errors, offline), auth.js (PIN login), store.js (data + live sync)
 ui/           shared pieces: dialogs, charts, printing, spec chips
 views/        screens: home, stock, scan, laptop pop-up, people, service, more, reports, backup
+w/            public warranty check page (opened by the QR on bills)
 supabase/     setup_all.sql (run this), migrations/ (its sources), functions/ (Edge Functions), config.toml
 tests/local/  database tests on a local Postgres (PGlite): run.mjs, excel.mjs
 tests/ui/     devserver.mjs (local stand-in for Supabase), smoke.mjs (browser test)
@@ -205,7 +255,8 @@ docs/PLAN.md  all decisions
 ```
 cd tests/local
 npm install
-node run.mjs           # every database rule, the 9 required tests and more (161 checks)
+node run.mjs           # every database rule, the 9 required tests and more (213 checks)
+node unit.mjs          # amount in words (lakh, crore) and warranty dates
 node run.mjs --setup   # the same, loading supabase/setup_all.sql twice from empty
 node excel.mjs         # the Excel import against the dealer's file and Dashboard totals
 ```

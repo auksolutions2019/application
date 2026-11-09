@@ -18,15 +18,16 @@ export function toast(msg, kind = 'err') {
 let lastMethod = 'Cash';
 // Small centred dialog. Resolves true/false; for amount dialogs {amount, method, ref} or null; for text dialogs the text or null.
 export function dialog({ title, body = '', ok = 'OK', danger = false, amount = false, max = null, text = false,
-                         allowZero = false, method = true, ref = true, placeholder = '' }) {
+                         allowZero = false, method = true, ref = true, note = true, placeholder = '', value = '' }) {
   return new Promise(res => {
     const d = $('dlg');
     d.innerHTML = `<div class="dbox"><h3>${title}</h3>${body ? `<p class="muted" style="margin-bottom:6px">${body}</p>` : ''}
     ${amount ? `<div class="amt"><span>₹</span><input id="dlgv" type="number" inputmode="decimal" placeholder="0"></div>
       ${max ? `<button class="chipfill" onclick="document.getElementById('dlgv').value=${Number(max)}">Full amount ${rs(max)}</button>` : ''}
       ${method ? chips('dlgm', METHODS, lastMethod) : ''}
-      ${method && ref ? `<input id="dlgref" placeholder="Ref / UTR (optional)" autocomplete="off" style="margin-top:4px">` : ''}` : ''}
-    ${text ? `<input id="dlgv" style="margin-top:8px" autocomplete="off" placeholder="${esc(placeholder)}">` : ''}
+      ${method && ref ? `<input id="dlgref" placeholder="Ref / UTR (optional)" autocomplete="off" style="margin-top:4px">` : ''}
+      ${note ? `<input id="dlgnote" placeholder="Note (optional)" maxlength="300" autocomplete="off" style="margin-top:6px">` : ''}` : ''}
+    ${text ? `<input id="dlgv" style="margin-top:8px" autocomplete="off" maxlength="300" placeholder="${esc(placeholder)}" value="${esc(value)}">` : ''}
     <div class="row" style="margin-top:16px"><button class="ghost" id="dlgno">Cancel</button><button id="dlgok" class="${danger ? 'red' : ''}">${ok}</button></div></div>`;
     d.classList.remove('hidden');
     const v = $('dlgv');
@@ -39,7 +40,7 @@ export function dialog({ title, body = '', ok = 'OK', danger = false, amount = f
         if (!(allowZero && v.value !== '' && n === 0) && (!n || n <= 0)) return toast('Enter an amount');
         if (max != null && n > max + 0.001) return toast('That is more than the balance of ' + rs(max));
         if (method) lastMethod = chipVal('dlgm') || 'Cash';
-        done({ amount: n, method: method ? lastMethod : null, ref: ($('dlgref')?.value || '').trim() });
+        done({ amount: n, method: method ? lastMethod : null, ref: ($('dlgref')?.value || '').trim(), note: ($('dlgnote')?.value || '').trim() });
       } else done(text ? v.value : true);
     };
     if (v) v.onkeydown = e => { if (e.key === 'Enter') $('dlgok').click(); };

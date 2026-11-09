@@ -30,6 +30,10 @@ language sql immutable set search_path = '' as $$
   select coalesce(nullif(btrim(p_name), ''), coalesce(p_lead, 'Walk-in') || ' customer')
 $$;
 
+-- ' – note' after a log line when the payment has a note
+create or replace function private.note_suffix(p text) returns text
+language sql immutable set search_path = '' as $$ select case when btrim(coalesce(p, '')) <> '' then ' – ' || btrim(p) else '' end $$;
+
 create or replace function private.lap_code(p_id uuid) returns text
 language sql stable set search_path = '' as $$ select code from public.laptops where id = p_id $$;
 
@@ -171,7 +175,7 @@ begin
   end if;
   select private.cust_label(sa.customer_name, sa.lead_source) customer_name, l.code into s from public.sales sa join public.laptops l on l.id = sa.laptop_id where sa.id = new.sale_id;
   perform private.log('payment', 'laptop', s.code,
-    format('Received %s (%s) from %s for %s', private.rs(new.amount), new.method, s.customer_name, s.code));
+    format('Received %s (%s) from %s for %s%s', private.rs(new.amount), new.method, s.customer_name, s.code, private.note_suffix(new.note)));
   return null;
 end $$;
 drop trigger if exists log_ins on public.sale_payments;
@@ -204,7 +208,7 @@ declare b record;
 begin
   select private.cust_label(bo.customer_name, bo.lead_source) customer_name, l.code into b from public.bookings bo join public.laptops l on l.id = bo.laptop_id where bo.id = new.booking_id;
   perform private.log('advance', 'laptop', b.code,
-    format('Advance %s (%s) from %s for %s', private.rs(new.amount), new.method, b.customer_name, b.code));
+    format('Advance %s (%s) from %s for %s%s', private.rs(new.amount), new.method, b.customer_name, b.code, private.note_suffix(new.note)));
   return null;
 end $$;
 drop trigger if exists log_ins on public.booking_payments;
@@ -213,7 +217,7 @@ create trigger log_ins after insert on public.booking_payments for each row exec
 create or replace function private.log_refunds() returns trigger
 language plpgsql security definer set search_path = '' as $$
 begin
-  perform private.log('refund', 'refund', new.id::text, format('Refund %s (%s): %s', private.rs(new.amount), new.method, new.note));
+  perform private.log('refund', 'refund', new.id::text, format('Refund %s (%s): %s%s', private.rs(new.amount), new.method, new.label, private.note_suffix(new.note)));
   return null;
 end $$;
 drop trigger if exists log_ins on public.refunds;
@@ -237,8 +241,8 @@ declare n text;
 begin
   select name into n from public.suppliers where id = new.supplier_id;
   perform private.log('supplier_payment', 'supplier', new.supplier_id::text,
-    format('%s %s (%s) to supplier %s', case when new.amount < 0 then 'Reversed payment of' else 'Paid' end,
-           private.rs(abs(new.amount)), new.method, n), true);
+    format('%s %s (%s) to supplier %s%s', case when new.amount < 0 then 'Reversed payment of' else 'Paid' end,
+           private.rs(abs(new.amount)), new.method, n, private.note_suffix(new.note)), true);
   return null;
 end $$;
 drop trigger if exists log_ins on public.supplier_payments;
@@ -263,8 +267,8 @@ declare n text;
 begin
   select name into n from public.debts where id = new.debt_id;
   perform private.log('debt_payment', 'debt', new.debt_id::text,
-    format('%s %s (%s) for %s', case when new.amount < 0 then 'Reversed payment of' else 'Paid' end,
-           private.rs(abs(new.amount)), new.method, n), true);
+    format('%s %s (%s) for %s%s', case when new.amount < 0 then 'Reversed payment of' else 'Paid' end,
+           private.rs(abs(new.amount)), new.method, n, private.note_suffix(new.note)), true);
   return null;
 end $$;
 drop trigger if exists log_ins on public.debt_payments;
@@ -277,7 +281,7 @@ declare p text;
 begin
   select prefix into p from public.lots where id = new.lot_id;
   if tg_op = 'INSERT' then
-    perform private.log('lot_expense', 'lot', p, format('Parts for lot %s: %s x %s, %s', p, new.count, new.type, private.rs(new.amount)));
+    perform private.log('lot_expense', 'lot', p, format('Parts for lot %s: %s x %s, %s%s', p, new.count, new.type, private.rs(new.amount), private.note_suffix(new.note)));
   elsif new.deleted_at is not null and old.deleted_at is null then
     perform private.log('lot_expense_deleted', 'lot', p, format('Deleted parts for lot %s: %s x %s, %s', p, new.count, new.type, private.rs(new.amount)));
   end if;
@@ -384,7 +388,7 @@ create or replace function private.log_service_payments() returns trigger
 language plpgsql security definer set search_path = '' as $$
 begin
   perform private.log('service_payment', 'partner', new.partner_id::text,
-    format('Paid %s (%s) to service partner %s', private.rs(new.amount), new.method, private.partner_label(new.partner_id)), true);
+    format('Paid %s (%s) to service partner %s%s', private.rs(new.amount), new.method, private.partner_label(new.partner_id), private.note_suffix(new.note)), true);
   return null;
 end $$;
 drop trigger if exists log_ins on public.service_payments;

@@ -6,7 +6,7 @@ import { S, load, isAdmin, isMgr, role } from '../api/store.js';
 import { read, write } from '../api/client.js';
 import { specEditor, wireSpecEditor, readSpecs, shorthand, lapName, PROCS, RAMS } from '../ui/specs.js';
 import { printStickers } from '../ui/print.js';
-import { status, lapRow, owned, atService, ageDays, oldDays, testsPassed, matches, LEADS } from './common.js';
+import { status, lapRow, owned, atService, ageDays, oldDays, testsPassed, matches, LEADS, noteLine } from './common.js';
 
 let stockTab = 'lots', stockQ = '', stockF = 'all', openLot = null, spec = { processor: '', ram: '', storage: '' };
 const lotExtra = new Map();          // laptops of a lot that are not in the snapshot (old sold ones)
@@ -47,7 +47,7 @@ function lotDetail(b) {
   <div class="row" style="margin:10px 0"><button class="ghost sm" onclick="A.printLot('${b.id}')">Print all stickers</button>
     ${mgr && b.kind !== 'exchange' ? `<button class="ghost sm" onclick="A.addLotExpense('${b.id}')">Add parts / expense</button>` : ''}
     ${avail.length ? `<button class="ghost sm" onclick="document.querySelectorAll('.pick').forEach(c=>c.checked=!c.checked)">Tick all in stock</button>` : ''}</div>
-  ${mgr && b.expenses?.length ? `<h3 class="sh" style="margin-top:6px">Parts and expenses for this lot</h3><div class="list flat">${b.expenses.map(e => `<div class="lrow" style="cursor:default"><span class="cm"><b>${e.count} × ${esc(e.type)}</b><span class="muted">${fmtD(e.spent_on)}${e.line_id ? ', ' + esc(b.lines.find(x => x.id === e.line_id)?.label || '') : ', all laptops'}${e.note ? ', ' + esc(e.note) : ''}</span></span>
+  ${mgr && b.expenses?.length ? `<h3 class="sh" style="margin-top:6px">Parts and expenses for this lot</h3><div class="list flat">${b.expenses.map(e => `<div class="lrow" style="cursor:default"><span class="cm"><b>${e.count} × ${esc(e.type)}</b><span class="muted">${fmtD(e.spent_on)}${e.line_id ? ', ' + esc(b.lines.find(x => x.id === e.line_id)?.label || '') : ', all laptops'}</span>${noteLine(e.note, 'lot_expense', e.id)}</span>
      ${e.count > 1 ? `<span class="mtag">${e.units_left} of ${e.count} left</span>` : ''}<b>${rs(e.amount)}</b>${adm ? `<button class="sm ghost" onclick="A.delLotExpense('${e.id}')" aria-label="Delete">${ICON.trash}</button>` : ''}</div>`).join('')}</div>` : ''}
   <div class="list flat" style="margin-top:10px">${ls.map(l => `<div class="lrow">${canPick(l) ? `<input type="checkbox" class="pick" value="${l.id}" aria-label="Select ${esc(l.code)}">` : '<span style="width:20px"></span>'}<span onclick="A.openLaptop('${esc(l.code)}')" style="flex:1;min-width:0">${tag(l.code)}<div class="muted" style="margin-top:4px">${esc(lapName(l))}</div></span>${status(l)}</div>`).join('')}</div>
   ${avail.length ? `<h3 style="margin-top:18px">Sell ticked laptops together</h3><p class="muted">For a dealer or customer taking many laptops. The payment is shared across them, in the order ticked.</p>
@@ -57,8 +57,10 @@ function lotDetail(b) {
   <div class="row"><div><label>Name</label><input id="lname"></div><div><label>Mobile</label><input id="lmob" type="tel" inputmode="tel"></div></div>
   <label>Address (optional)</label><input id="ladd">
   <div class="row"><div><label>Price per laptop (₹) *</label><input id="lprice" type="number" inputmode="decimal"></div><div><label>Total paid now (₹)</label><input id="lpaid" type="number" inputmode="decimal"></div></div>
-  ${chips('lmeth', METHODS, 'Cash')}<input id="lref" placeholder="Ref / UTR (optional)">
-  <p class="muted" style="margin-top:6px">Mobile is needed if money is still due. Warranty: the shop's default (${S.d.settings.default_warranty_months} months) when a mobile is given.</p>
+  ${chips('lmeth', METHODS, 'Cash')}<div class="row nw"><input id="lref" placeholder="Ref / UTR (optional)"><input id="lnote" maxlength="300" placeholder="Note (optional)"></div>
+  <label>Laptop warranty</label>${chips('lwar', [['0', 'None'], ['3', '3 months'], ['6', '6 months'], ['12', '12 months']], String([0, 3, 6, 12].includes(S.d.settings.default_warranty_months) ? S.d.settings.default_warranty_months : 0))}
+  <label>Charger and battery warranty</label>${chips('lacc', [['0', 'None'], ['6', '6 months'], ['12', '12 months']], String([0, 6, 12].includes(S.d.settings.accessory_warranty_months) ? S.d.settings.accessory_warranty_months : 0))}
+  <p class="muted" style="margin-top:6px">Mobile is needed for a warranty or if money is still due. One bill for all ticked laptops.</p>
   <button style="width:100%;margin-top:14px" onclick="A.sellLot()">Sell ticked laptops</button>` : ''}</div>`;
 }
 
@@ -184,7 +186,7 @@ export const actions = {
     });
   },
   async fillLineCost(lineId, qty) {
-    const r = await dialog({ title: 'What did this line cost?', body: `Total paid for these ${qty} laptop${qty > 1 ? 's' : ''}. It is shared equally.`, ok: 'Save cost', amount: true, method: false, allowZero: true });
+    const r = await dialog({ title: 'What did this line cost?', body: `Total paid for these ${qty} laptop${qty > 1 ? 's' : ''}. It is shared equally.`, ok: 'Save cost', amount: true, method: false, note: false, allowZero: true });
     if (!r) return;
     await guard(async () => { await write('set_line_cost', { p_line_id: lineId, p_cost: r.amount }); await load(); toast('Cost saved', 'ok'); });
   },
@@ -217,7 +219,8 @@ export const actions = {
     const price = num('lprice'), paid = num('lpaid') || 0;
     if (!ids.length) return toast('Tick at least one laptop');
     if (!price) return toast('Enter the price per laptop');
-    const args = { p_laptop_ids: ids, p_price_each: price, p_total_paid: paid, p_method: chipVal('lmeth'), p_ref: val('lref'),
+    const args = { p_laptop_ids: ids, p_price_each: price, p_total_paid: paid, p_method: chipVal('lmeth'), p_ref: val('lref'), p_note: val('lnote'),
+      p_warranty_months: +chipVal('lwar'), p_accessory_warranty_months: +chipVal('lacc'),
       p_lead_source: chipVal('llead'), p_customer_type: chipVal('ltype'), p_name: val('lname'), p_mobile: val('lmob'), p_address: val('ladd') };
     await guard(async () => {
       let r;
@@ -228,7 +231,7 @@ export const actions = {
         r = await write('sell_laptops_bulk', { ...args, p_override_tests: true });
       }
       await load();
-      toast(`${r.count} laptops sold. Total ${rs(r.total)}, balance ${rs(r.balance)}`, 'ok');
+      toast(`${r.count} laptops sold on bill INV-${r.invoice_no}. Total ${rs(r.total)}, balance ${rs(r.balance)}`, 'ok');
     });
   }
 };

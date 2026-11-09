@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#0f1f3d">
+<title>Warranty check</title>
+<link rel="stylesheet" href="../css/fonts.css">
+<style>
+:root{--ink:#0E2147;--blue:#1F6BFF;--ice:#EDF2F9;--line:#DCE4F0;--green:#0F9D6B;--red:#E1483F;--mut:#5E6E8C}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:"Archivo",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--ice);color:var(--ink);font-size:15px;line-height:1.45;padding:20px 16px}
+.card{background:#fff;border:1px solid var(--line);border-radius:20px;padding:22px;max-width:440px;margin:0 auto}
+h1{font-size:22px;font-stretch:125%;font-variation-settings:"wdth" 125;margin-bottom:2px}
+.muted{color:var(--mut);font-size:13.5px}
+.kv{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid #EBF0F7}.kv span{color:var(--mut)}.kv b{text-align:right}
+.st{display:flex;gap:12px;align-items:center;border-radius:14px;padding:14px;margin:16px 0}
+.st.ok{background:#E2F5EC;color:#0B6E4B}.st.bad{background:#FCE8E6;color:#9F2A23}.st.none{background:var(--ice);color:var(--mut)}
+.st b{display:block;font-size:18px}
+.mono{font-variant-numeric:tabular-nums;font-weight:700;letter-spacing:.03em}
+</style>
+</head>
+<body>
+<div class="card" id="out"><p class="muted">Checking the warranty…</p></div>
+<script src="../config.js"></script>
+<script>
+(async () => {
+  const out = document.getElementById('out');
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const d = iso => iso ? String(iso).slice(0, 10).split('-').reverse().join('-') : '–';
+  const t = (new URLSearchParams(location.search).get('t') || '').trim();
+  const c = window.FCL_CONFIG || {};
+  if (!/^[0-9a-fA-F]{64}$/.test(t)) { out.innerHTML = '<h1>Warranty not found</h1><p class="muted">This link is not complete. Scan the QR on your bill again.</p>'; return; }
+  try {
+    const r = await fetch(`${c.SUPABASE_URL}/functions/v1/warranty-check?t=${encodeURIComponent(t)}`, { headers: { apikey: c.SUPABASE_ANON_KEY } });
+    const w = await r.json();
+    if (!r.ok) { out.innerHTML = `<h1>${r.status === 429 ? 'Please wait' : 'Warranty not found'}</h1><p class="muted">${esc(w.message || 'Check the QR on your bill.')}</p>`; return; }
+    const box = (label, end, status) => {
+      const cls = status === 'Valid' ? 'ok' : status === 'No warranty' ? 'none' : 'bad';
+      return `<div class="st ${cls}"><div><span>${label}</span><b>${status === 'Valid' ? 'Valid till ' + d(end) : esc(status)}</b></div></div>`;
+    };
+    out.innerHTML = `<p class="muted">${esc(w.business)}</p><h1>Warranty check</h1>
+      ${box('Laptop', w.laptop_warranty_end, w.laptop_status)}${box('Charger and battery', w.accessory_warranty_end, w.accessory_status)}
+      <div class="kv"><span>Laptop</span><b>${esc(w.laptop)}</b></div>
+      <div class="kv"><span>Sticker</span><b class="mono">${esc(w.code)}</b></div>
+      ${w.invoice_no ? `<div class="kv"><span>Invoice</span><b>${esc(w.invoice_no)}</b></div>` : ''}
+      <div class="kv" style="border:0"><span>Bill date</span><b>${d(w.bill_date)}</b></div>
+      <p class="muted" style="margin-top:12px">Keep the QR sticker on the laptop and bring your bill for any service.</p>`;
+  } catch (e) {
+    out.innerHTML = '<h1>Could not check</h1><p class="muted">Check the internet and try again.</p>';
+  }
+})();
+</script>
+</body>
+</html>

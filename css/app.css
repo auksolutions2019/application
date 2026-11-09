@@ -309,3 +309,31 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 textarea{font:inherit;width:100%;padding:12px 13px;border:1px solid var(--line);border-radius:12px;background:#fff;color:var(--ink);min-height:70px}
 .userrow .muted b{color:var(--ink)}
 .chips.wrap{flex-wrap:wrap;overflow:visible}
+.pnote{font-size:12.5px;color:var(--ink2);margin-top:2px;font-weight:500;white-space:normal}
+.pnote .link{margin-left:4px;font-size:13px}
+.lrow .cm .pnote{display:block}
+/* bill (dealer's invoice layout, A4) */
+.inv{font-family:Archivo,Arial,sans-serif;color:#111;max-width:190mm;margin:0 auto;font-size:10.5pt}
+.inv .ih{display:grid;grid-template-columns:32mm 1fr auto;gap:6mm;align-items:center;border-bottom:2px solid #111;padding-bottom:4mm}
+.inv .ih img{width:30mm;height:30mm;object-fit:contain}
+.inv .ih .biz b{display:block;font-size:15pt;font-stretch:125%;font-variation-settings:"wdth" 125}
+.inv .ih .biz div{font-size:9.5pt;color:#333}
+.inv .ih h1{font-size:24pt;letter-spacing:.06em}
+.inv .ibill{display:flex;justify-content:space-between;gap:8mm;margin:5mm 0}
+.inv .ibill span{display:block;font-size:8.5pt;color:#555;font-weight:700;letter-spacing:.04em}
+.inv .ibill b{font-size:11pt}
+.inv table{width:100%;border-collapse:collapse}
+.inv th{background:#111;color:#fff;font-size:9pt;text-align:left;padding:2.2mm 2mm}
+.inv td{padding:2.5mm 2mm;border-bottom:1px solid #ccc;vertical-align:top}
+.inv td.r,.inv th.r{text-align:right;white-space:nowrap}
+.inv .d1{font-weight:800}.inv .d2{font-size:9.5pt;color:#333}.inv .d3{font-size:9pt;color:#0B6E4B;margin-top:1mm}
+.inv .wq{display:flex;gap:3mm;align-items:center;margin-top:2mm}.inv .wq .q img,.inv .wq .q canvas{width:19mm!important;height:19mm!important}
+.inv .wq small{font-size:8pt;color:#333;max-width:75mm}
+.inv .minus td{color:#9F2A23}
+.inv .tot{display:grid;grid-template-columns:1fr auto;gap:2mm 8mm;margin-top:4mm;align-items:start}
+.inv .words span{display:block;font-size:8.5pt;color:#555;font-weight:700}
+.inv .sums div{display:flex;justify-content:space-between;gap:10mm;padding:1mm 0}
+.inv .sums .gt{font-weight:800;font-size:13pt;border-top:2px solid #111;border-bottom:2px solid #111;padding:2mm 0}
+.inv .ft{display:flex;justify-content:space-between;gap:8mm;margin-top:10mm;font-size:9.5pt}
+.inv .ft span{display:block;font-size:8.5pt;color:#555;font-weight:700}
+.inv .sign{text-align:right;min-width:60mm}.inv .sign .sl{margin-top:16mm;border-top:1px solid #111;padding-top:1.5mm;font-weight:700}

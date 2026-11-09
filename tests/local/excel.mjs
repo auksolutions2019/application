@@ -1,6 +1,7 @@
 // Checks the one-time Excel import end to end on a throwaway local database.
 // Needs docs/AUK_Laptop_Business_Manager.xlsx (kept out of git). Usage: node excel.mjs
 import { PGlite } from '@electric-sql/pglite';
+import { pgcrypto } from '@electric-sql/pglite/contrib/pgcrypto';
 import { createRequire } from 'node:module';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -45,7 +46,7 @@ ok(forced.plan.sales.every(x => !/^(gandu|lady)$/i.test(x.name)), 'even if typed
 ok(!P.flags.some(f => f.kind === 'error'), 'no errors in the plan', JSON.stringify(P.flags.filter(f => f.kind === 'error')));
 
 console.log('\nImport into a fresh local database');
-const db = new PGlite();
+const db = new PGlite({ extensions: { pgcrypto } });
 await db.exec(readFileSync(join(here, 'supabase_stub.sql'), 'utf8'));
 for (const f of readdirSync(join(root, 'supabase', 'migrations')).filter(f => f.endsWith('.sql')).sort()) await db.exec(readFileSync(join(root, 'supabase', 'migrations', f), 'utf8'));
 const A = { id: '00000000-0000-0000-0000-00000000000a', sess: '10000000-0000-0000-0000-00000000000a' };
@@ -68,6 +69,8 @@ const filled = (await db.query(`select count(*) n from public.laptops l join pub
 ok(filled > 20, `sold laptops from Mixed lots got their specs from the sale text (${filled})`);
 eq((await db.query(`select count(*) n from public.sales where customer_name ~* '^(gandu|lady)$'`)).rows[0].n, 0, 'no sale in the database is named gandu or lady');
 ok((await db.query(`select count(*) n from public.activity_log where action = 'import'`)).rows[0].n == 1, 'one summary line in Activity');
+const inv = (await db.query(`select (select invoice_next from public.settings) nxt, (select count(*) from public.sales where invoice_no is not null) n`)).rows[0];
+ok(+inv.nxt === 58 && +inv.n === 0, 'old Excel sales use no invoice numbers (the next bill is still INV-58)', JSON.stringify(inv));
 let again = null; try { await db.query(`select public.import_excel($1::jsonb)`, [JSON.stringify(P.plan)]); } catch (e) { again = e.message; }
 ok(again && /only once/.test(again), 'a second import is refused');
 console.log(`\n${pass} passed, ${fail} failed`);
