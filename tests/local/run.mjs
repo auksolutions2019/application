@@ -410,6 +410,10 @@ let dupInv = null; try { await db.query(`insert into public.invoices (no, issued
 ok(dupInv && /duplicate key/.test(dupInv), 'the database refuses a repeated invoice number');
 const eLow = await rpcErr(U.admin, 'save_settings', { p_shop_name: 'First Choice Laptops', p_phone: '', p_addr: '', p_default_warranty_months: 6, p_old_days: 60, p_cloud_name: '', p_upload_preset: '', p_invoice_next: nos[0] });
 ok(eLow && /already used/.test(eLow.message), 'the next invoice number cannot be set to one already used');
+eq((await rpc(U.coadmin, 'get_snapshot')).settings.bill_print_bw, true, 'bills print in black and white by default');
+await rpc(U.admin, 'save_settings', { p_shop_name: 'First Choice Laptops', p_phone: '', p_addr: '', p_default_warranty_months: 6, p_old_days: 60, p_cloud_name: '', p_upload_preset: '', p_bill_print_bw: false });
+eq((await rpc(U.admin, 'get_snapshot')).settings.bill_print_bw, false, 'the admin can switch black-and-white printing off');
+await rpc(U.admin, 'save_settings', { p_shop_name: 'First Choice Laptops', p_phone: '', p_addr: '', p_default_warranty_months: 6, p_old_days: 60, p_cloud_name: '', p_upload_preset: '', p_bill_print_bw: true });
 const bkI = await rpc(U.admin, 'sell_laptops_bulk', { p_laptop_ids: idsI.slice(6, 8), p_price_each: 12000, p_total_paid: 24000, p_method: 'Cash', p_mobile: '9800000088', p_name: 'Kalu', p_note: 'dealer cash' });
 eq((await one(`select count(distinct invoice_no) n, count(*) c from public.sales where bulk_group = $1`, [bkI.bulk_group])).n, 1, 'a bulk sale is one bill (one invoice number)');
 

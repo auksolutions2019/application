@@ -71,16 +71,31 @@ ok(sNote.note === 'cash at counter' && sNote.invoice_no >= 58 && +sNote.acc === 
 ok(/cash at counter/.test(await page.$eval('#sheet', e => e.innerText)), 'the note shows under the payment');
 // the bill
 await page.evaluate(() => { window.print = () => { window.__printed = true; }; });
-await page.evaluate(() => A.printBillCur()); await wait(1500);
-const bill = await page.$eval('#printArea', e => e.innerText);
-ok(/INVOICE/.test(bill) && new RegExp('INV-' + sNote.invoice_no).test(bill) && /BILL TO/.test(bill) && /Rahul/.test(bill), 'bill: INVOICE, invoice number, Bill To', bill.slice(0, 200));
-ok(/Twenty Two Thousand Rupees Only\/-/.test(bill) && /GRAND TOTAL/.test(bill) && /Balance/.test(bill), 'bill: amount in words, grand total, paid and balance');
-ok(/warranty for laptop, 1 year warranty for charger and battery/.test(bill) && /Scan to check warranty. Valid till \d\d-\d\d-\d{4}/.test(bill), 'bill: warranty text and QR caption');
-ok(await page.$$eval('#printArea .wq .q canvas, #printArea .wq .q img', e => e.length) >= 1 && await page.evaluate(() => window.__printed === true), 'warranty QR drawn and the print dialog opened');
-await page.evaluate(() => { document.getElementById('printArea').style.cssText = 'display:block;background:#fff;padding:10px'; document.getElementById('app').style.display = 'none'; document.getElementById('modal').style.display = 'none'; });
-await page.setViewport({ width: 794, height: 1123 }); await wait(300); await shot('10-bill');
-await page.setViewport({ width: 400, height: 860 });
-await page.evaluate(() => { document.getElementById('printArea').style.cssText = ''; document.getElementById('app').style.display = ''; document.getElementById('modal').style.display = ''; document.getElementById('printArea').innerHTML = ''; });
+// sample bill details, as the dealer fills them in Settings (sample values, not the dealer's)
+await srv.db.query(`update public.settings set bill_email = 'shop@example.com', bank_name = 'Sample Bank', bank_holder = 'Shop Owner', bank_account = '000011112222', bank_ifsc = 'SMPL0000001'`);
+await page.evaluate(() => { A.closeModal(); dispatchEvent(new Event('online')); }); await wait(1200);   // the app reloads its data
+await page.evaluate(c => A.openLaptop(c), code); await wait(600);
+const showBill = async name => {
+  await page.evaluate(() => { document.getElementById('printArea').style.cssText = 'display:block;background:#fff;padding:24px 0'; document.getElementById('app').style.display = 'none'; document.getElementById('modal').style.display = 'none'; });
+  await page.setViewport({ width: 794, height: 1123 }); await wait(300); await shot(name);
+  await page.setViewport({ width: 400, height: 860 });
+  await page.evaluate(() => { document.getElementById('printArea').style.cssText = ''; document.getElementById('app').style.display = ''; document.getElementById('modal').style.display = ''; });
+};
+await page.evaluate(() => A.printBillCur('print')); await wait(1500);
+const bill = await page.$eval('#printArea', e => { e.style.display = 'block'; const t = e.innerText; e.style.display = ''; return t; });   // read as printed (CSS capitals)
+ok(await page.$('#printArea .inv.inv-bw') !== null && await page.evaluate(() => window.__printed === true), 'Print bill: black and white (setting on by default), print dialog opened');
+ok(/INVOICE/.test(bill) && new RegExp('Invoice no\\.\\s+INV-' + sNote.invoice_no).test(bill) && /Invoice date\s+\d\d-\d\d-\d{4}/.test(bill), 'bill header: INVOICE, invoice no., invoice date', bill.slice(0, 300));
+ok(/BILL TO\s+Rahul/.test(bill) && /Mobile 98111 11111/.test(bill) && /LAPTOP\s+Dell Latitude 5490/.test(bill) && new RegExp('Sticker code ' + code).test(bill), 'Bill To and the Laptop box with sticker code', bill.slice(0, 500));
+ok(/Dell Latitude 5490, i5 8th gen/.test(bill) && /8GB RAM, 256GB SSD/.test(bill) && /6 months warranty for laptop, 1 year warranty for charger and battery/.test(bill), 'description lines as on the dealer\'s bill');
+ok(/AMOUNT IN WORDS\s+Twenty Two Thousand Rupees Only\/-/.test(bill) && /Total\s+₹22,000\.00/.test(bill) && /Paid \d\d-\d\d-\d{4}, Cash\s+−₹20,000\.00/.test(bill) && /BALANCE\s+₹2,000\.00/.test(bill), 'amount in words, Total, payment line, BALANCE', bill.slice(bill.indexOf('AMOUNT'), bill.indexOf('AMOUNT') + 200));
+ok(/Scan to check warranty/.test(bill) && /Laptop, 6 months\s+Valid till \d\d-\d\d-\d{4}/.test(bill) && /Charger and battery, 1 year\s+Valid till \d\d-\d\d-\d{4}/.test(bill) && /Warranty starts on the invoice date/.test(bill), 'warranty box: QR and both Valid till dates');
+ok(/PAYMENT INSTRUCTIONS\s+Bank: Sample Bank/.test(bill) && /For, FIRST CHOICE LAPTOPS/.test(bill) && /AUTHORIZED SIGNATURE/.test(bill) && /Thank you for your purchase/.test(bill), 'payment instructions, "For, FIRST CHOICE LAPTOPS", signature, thank-you line');
+ok(await page.$$eval('#printArea .iwb .q canvas, #printArea .iwb .q img', e => e.length) >= 1, 'warranty QR drawn');
+await showBill('10-bill-bw');
+await page.evaluate(() => A.printBillCur('pdf')); await wait(1500);
+ok(await page.$('#printArea .inv.inv-color') !== null, 'Bill PDF: in colour');
+await showBill('10-bill-colour');
+await page.evaluate(() => { document.getElementById('printArea').innerHTML = ''; });
 // the public warranty page (no login)
 const wp = await browser.newPage(); await wp.setViewport({ width: 400, height: 700 });
 await wp.goto('http://localhost:8787/w/?t=' + sNote.warranty_token, { waitUntil: 'networkidle0' }); await wait(500);

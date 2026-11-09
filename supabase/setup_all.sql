@@ -110,6 +110,7 @@ create table if not exists public.settings (
   bank_ifsc               text not null default '',
   invoice_next            int  not null default 58 check (invoice_next >= 1),
   accessory_warranty_months int not null default 12 check (accessory_warranty_months between 0 and 60),
+  bill_print_bw           boolean not null default true,   -- printed bills in black and white; WhatsApp / download PDF in colour
   created_at              timestamptz not null default now(),
   updated_at              timestamptz not null default now(),
   updated_by              uuid references public.profiles(id)
@@ -636,6 +637,7 @@ alter table public.settings add column if not exists bank_account text not null 
 alter table public.settings add column if not exists bank_ifsc text not null default '';
 alter table public.settings add column if not exists invoice_next int not null default 58;
 alter table public.settings add column if not exists accessory_warranty_months int not null default 12;
+alter table public.settings add column if not exists bill_print_bw boolean not null default true;
 alter table public.sales add column if not exists invoice_no int references public.invoices(no);
 alter table public.sales add column if not exists accessory_warranty_months int not null default 0;
 alter table public.sales add column if not exists warranty_token text unique;
@@ -2326,7 +2328,7 @@ create or replace function public.save_settings(
   p_cloud_name text, p_upload_preset text,
   p_bill_name text default null, p_bill_email text default null, p_logo_url text default null,
   p_bank_name text default null, p_bank_holder text default null, p_bank_account text default null, p_bank_ifsc text default null,
-  p_invoice_next int default null, p_accessory_warranty_months int default null
+  p_invoice_next int default null, p_accessory_warranty_months int default null, p_bill_print_bw boolean default null
 ) returns void language plpgsql security definer set search_path = '' as $$
 declare v_max int;
 begin
@@ -2353,6 +2355,7 @@ begin
     bank_holder = coalesce(btrim(p_bank_holder), bank_holder), bank_account = coalesce(btrim(p_bank_account), bank_account),
     bank_ifsc = coalesce(upper(btrim(p_bank_ifsc)), bank_ifsc), invoice_next = coalesce(p_invoice_next, invoice_next),
     accessory_warranty_months = coalesce(p_accessory_warranty_months, accessory_warranty_months),
+    bill_print_bw = coalesce(p_bill_print_bw, bill_print_bw),
     updated_by = auth.uid()
   where id = 1;
 end $$;

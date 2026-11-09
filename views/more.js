@@ -88,6 +88,7 @@ export const views = {
     <p class="muted" style="margin-top:6px">Address and phone come from Shop details above.</p>
     <div class="row nw"><div><label>Next invoice number</label><div class="mob"><span>INV-</span><input id="st_inv" type="number" min="1" value="${st.invoice_next}"></div></div></div>
     <div class="row nw"><div><label>Laptop warranty (months)</label><input id="st_warranty" type="number" value="${st.default_warranty_months}"></div><div><label>Charger and battery (months)</label><input id="st_acc" type="number" value="${st.accessory_warranty_months ?? 12}"></div></div>
+    <label class="tog"><input type="checkbox" id="st_bw" ${st.bill_print_bw === false ? '' : 'checked'}>Print in black and white (the PDF for WhatsApp stays in colour)</label>
     <h3 style="margin-top:18px">Payment instructions</h3>
     <label>Bank name</label><input id="st_bank_name" value="${esc(st.bank_name || '')}">
     <label>Account holder</label><input id="st_bank_holder" value="${esc(st.bank_holder || '')}">
@@ -161,7 +162,7 @@ export const actions = {
         p_old_days: num('st_old') || 60, p_cloud_name: val('st_cloud'), p_upload_preset: val('st_preset'),
         p_bill_name: val('st_bill_name'), p_bill_email: val('st_bill_email'), p_logo_url: val('st_logo_url'),
         p_bank_name: val('st_bank_name'), p_bank_holder: val('st_bank_holder'), p_bank_account: val('st_bank_account'), p_bank_ifsc: val('st_bank_ifsc'),
-        p_invoice_next: num('st_inv') !== S.d.settings.invoice_next ? num('st_inv') : null, p_accessory_warranty_months: num('st_acc') ?? 12 });
+        p_invoice_next: num('st_inv') !== S.d.settings.invoice_next ? num('st_inv') : null, p_accessory_warranty_months: num('st_acc') ?? 12, p_bill_print_bw: $('st_bw').checked });
       await load(); toast('Settings saved', 'ok');
     });
   },

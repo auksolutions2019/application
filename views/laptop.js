@@ -124,7 +124,7 @@ function soldPane(l) {
   ${sl.payments.length ? `<h3 class="sh">Payments</h3><div class="list flat">${sl.payments.map((p, i) => `<div class="lrow"><span class="pn">${i + 1}</span><span class="cm">${fmtD(p.paid_on)}<span class="mtag">${esc(p.method)}</span>${p.ref ? `<span class="muted"> ${esc(p.ref)}</span>` : ''}${p.method === 'Exchange' ? '' : noteLine(p.note, p.from_booking ? null : 'sale_payment', p.id)}</span><b>${rs(p.amount)}</b></div>`).join('')}</div>` : ''}
   ${due > 0 && isMgr() ? `<div class="row nw" style="margin-top:12px"><input id="ppay" type="number" inputmode="decimal" placeholder="Amount received (₹)"><button style="flex:none;white-space:nowrap" onclick="A.addPay()">${ICON.plus}Add payment</button></div>
    ${chips('pmeth', METHODS, 'Cash')}<div class="row nw"><input id="pref" placeholder="Ref / UTR (optional)"><input id="pnote" maxlength="300" placeholder="Note (optional)"></div><button class="chipfill" onclick="document.getElementById('ppay').value=${due}">Full balance ${rs(due)}</button>` : ''}
-  <div class="row" style="margin-top:16px"><button class="ghost sm" onclick="A.printBillCur()">Bill and warranty card</button>${sl.mobile ? `<a class="btnlink" target="_blank" href="${esc(waLink(sl.mobile, billText(billLaptops(l), S.d.settings)))}">${ICON.wa}Send bill on WhatsApp</a>` : ''}</div>
+  <div class="row" style="margin-top:16px"><button class="ghost sm" onclick="A.printBillCur('print')">Print bill</button><button class="ghost sm" onclick="A.printBillCur('pdf')">Bill PDF (colour)</button>${sl.mobile ? `<a class="btnlink" target="_blank" href="${esc(waLink(sl.mobile, billText(billLaptops(l), S.d.settings)))}">${ICON.wa}Send bill on WhatsApp</a>` : ''}</div>
   ${adm ? `<div class="row" style="margin-top:8px"><button class="ghost sm" onclick="A.returnSale()">Customer returned it</button><button class="ghost sm" style="color:var(--red)" onclick="A.undoSale()">Undo sale (entry mistake)</button></div>` : ''}`;
 }
 
@@ -272,7 +272,7 @@ export const actions = {
     if (a > l.sale.due) return toast('That is more than the balance of ' + rs(l.sale.due));
     await guard(async () => { await write('add_sale_payment', { p_sale_id: l.sale.id, p_amount: a, p_method: chipVal('pmeth'), p_ref: val('pref'), p_note: val('pnote') }); await after(`${rs(a)} received`); });
   },
-  async printBillCur() {
+  async printBillCur(mode = 'print') {
     let l = L();
     // sales from before bills get their invoice number and warranty QR the first time the bill is printed
     if (!l.sale.invoice_no || !l.sale.warranty_token) {
@@ -280,7 +280,7 @@ export const actions = {
       if (!ok) return;
       l = L() || await laptopByCode(cur);
     }
-    printBill(billLaptops(l), S.d.settings);
+    printBill(billLaptops(l), S.d.settings, mode);
   },
   async returnSale() {
     const l = L(), sl = l.sale, cash = sum(sl.payments.filter(p => p.method !== 'Exchange'), p => p.amount);

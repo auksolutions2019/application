@@ -97,6 +97,7 @@ create table if not exists public.settings (
   bank_ifsc               text not null default '',
   invoice_next            int  not null default 58 check (invoice_next >= 1),
   accessory_warranty_months int not null default 12 check (accessory_warranty_months between 0 and 60),
+  bill_print_bw           boolean not null default true,   -- printed bills in black and white; WhatsApp / download PDF in colour
   created_at              timestamptz not null default now(),
   updated_at              timestamptz not null default now(),
   updated_by              uuid references public.profiles(id)
@@ -623,6 +624,7 @@ alter table public.settings add column if not exists bank_account text not null 
 alter table public.settings add column if not exists bank_ifsc text not null default '';
 alter table public.settings add column if not exists invoice_next int not null default 58;
 alter table public.settings add column if not exists accessory_warranty_months int not null default 12;
+alter table public.settings add column if not exists bill_print_bw boolean not null default true;
 alter table public.sales add column if not exists invoice_no int references public.invoices(no);
 alter table public.sales add column if not exists accessory_warranty_months int not null default 0;
 alter table public.sales add column if not exists warranty_token text unique;

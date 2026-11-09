@@ -312,28 +312,57 @@ textarea{font:inherit;width:100%;padding:12px 13px;border:1px solid var(--line);
 .pnote{font-size:12.5px;color:var(--ink2);margin-top:2px;font-weight:500;white-space:normal}
 .pnote .link{margin-left:4px;font-size:13px}
 .lrow .cm .pnote{display:block}
-/* bill (dealer's invoice layout, A4) */
-.inv{font-family:Archivo,Arial,sans-serif;color:#111;max-width:190mm;margin:0 auto;font-size:10.5pt}
-.inv .ih{display:grid;grid-template-columns:32mm 1fr auto;gap:6mm;align-items:center;border-bottom:2px solid #111;padding-bottom:4mm}
-.inv .ih img{width:30mm;height:30mm;object-fit:contain}
-.inv .ih .biz b{display:block;font-size:15pt;font-stretch:125%;font-variation-settings:"wdth" 125}
-.inv .ih .biz div{font-size:9.5pt;color:#333}
-.inv .ih h1{font-size:24pt;letter-spacing:.06em}
-.inv .ibill{display:flex;justify-content:space-between;gap:8mm;margin:5mm 0}
-.inv .ibill span{display:block;font-size:8.5pt;color:#555;font-weight:700;letter-spacing:.04em}
-.inv .ibill b{font-size:11pt}
-.inv table{width:100%;border-collapse:collapse}
-.inv th{background:#111;color:#fff;font-size:9pt;text-align:left;padding:2.2mm 2mm}
-.inv td{padding:2.5mm 2mm;border-bottom:1px solid #ccc;vertical-align:top}
-.inv td.r,.inv th.r{text-align:right;white-space:nowrap}
-.inv .d1{font-weight:800}.inv .d2{font-size:9.5pt;color:#333}.inv .d3{font-size:9pt;color:#0B6E4B;margin-top:1mm}
-.inv .wq{display:flex;gap:3mm;align-items:center;margin-top:2mm}.inv .wq .q img,.inv .wq .q canvas{width:19mm!important;height:19mm!important}
-.inv .wq small{font-size:8pt;color:#333;max-width:75mm}
-.inv .minus td{color:#9F2A23}
-.inv .tot{display:grid;grid-template-columns:1fr auto;gap:2mm 8mm;margin-top:4mm;align-items:start}
-.inv .words span{display:block;font-size:8.5pt;color:#555;font-weight:700}
-.inv .sums div{display:flex;justify-content:space-between;gap:10mm;padding:1mm 0}
-.inv .sums .gt{font-weight:800;font-size:13pt;border-top:2px solid #111;border-bottom:2px solid #111;padding:2mm 0}
-.inv .ft{display:flex;justify-content:space-between;gap:8mm;margin-top:10mm;font-size:9.5pt}
-.inv .ft span{display:block;font-size:8.5pt;color:#555;font-weight:700}
-.inv .sign{text-align:right;min-width:60mm}.inv .sign .sl{margin-top:16mm;border-top:1px solid #111;padding-top:1.5mm;font-weight:700}
+/* bill: the dealer's invoice design (A4). .inv.color = WhatsApp / download PDF, .inv.inv-bw = printed */
+.inv{--acc:#14858F;--dark:#0F1D26;--soft:#E8F4F5;--txt:#111827;--mut:#4B5563;--rule:#D3DCE0;
+ font-family:Archivo,Arial,sans-serif;font-variation-settings:"wdth" 100;color:var(--txt);width:190mm;margin:0 auto;font-size:10pt;line-height:1.4;
+ -webkit-print-color-adjust:exact;print-color-adjust:exact}
+.inv.inv-bw{--acc:#111;--dark:#000;--soft:#fff;--mut:#444;--rule:#999}
+.inv .ih{display:flex;align-items:center;gap:6mm;padding-bottom:4.5mm;border-bottom:1mm solid var(--acc)}
+.inv .ih .logo{height:27mm;width:auto;max-width:56mm;object-fit:contain;flex:none}
+.inv.inv-bw .ih .logo{filter:grayscale(1) contrast(1.1)}
+.inv .ih .logo.sq{width:40mm;height:22mm;border-radius:1.5mm}
+.inv .ih .biz{flex:1;min-width:0}
+.inv .ih .biz b{display:block;font-size:19pt;font-weight:800;letter-spacing:-.01em;margin-bottom:1.5mm}
+.inv .ih .biz div{font-size:9.5pt;color:#374151}
+.inv .ih .no{text-align:right;flex:none}
+.inv .ih h1{font-size:21pt;font-weight:800;letter-spacing:.18em;color:var(--acc);margin-bottom:1.5mm}
+.inv .ih .no table{margin-left:auto;border-collapse:collapse}
+.inv .ih .no td{padding:.6mm 0 .6mm 6mm;font-size:9.5pt;color:var(--mut);border:0;vertical-align:baseline}
+.inv .ih .no td b{color:var(--txt);font-size:10pt}
+.inv .two{display:grid;grid-template-columns:1fr 1fr;gap:8mm;margin:6mm 0 5mm}
+.inv .lbl{display:block;font-size:8pt;font-weight:700;letter-spacing:.12em;color:var(--acc);margin-bottom:1.6mm;text-transform:uppercase}
+.inv .two b{display:block;font-size:11.5pt;font-weight:700;margin-bottom:.6mm}
+.inv .two div{font-size:10pt}
+.inv table.it{width:100%;border-collapse:collapse}
+.inv table.it th{background:var(--dark);color:#fff;font-size:8.5pt;font-weight:700;letter-spacing:.1em;text-align:left;padding:2.6mm 3mm;text-transform:uppercase}
+.inv table.it td{padding:3.2mm 3mm;vertical-align:top;border-bottom:.3mm solid var(--rule)}
+.inv.inv-bw table.it tr:last-child td{border-bottom:.4mm solid #111}
+.inv table.it .r{text-align:right;white-space:nowrap}
+.inv .d1{font-weight:700;font-size:11pt}.inv .d2{font-size:9pt;color:#374151}
+.inv .tot{display:grid;grid-template-columns:1fr 70mm;gap:8mm;margin-top:4mm}
+.inv .tot .words div{font-size:10pt}
+.inv .sums .l{display:flex;justify-content:space-between;padding:2.2mm 0;font-size:10pt}
+.inv .sums .bal{display:grid;grid-template-columns:1fr auto;gap:.6mm;margin-top:1.5mm}
+.inv .sums .bal span{background:var(--soft);border-top:.5mm solid var(--acc);border-bottom:.5mm solid var(--acc);padding:2.4mm 2mm;font-size:13pt;font-weight:800}
+.inv.inv-bw .sums .bal span{border-color:#111;padding-left:0}
+.inv .sums .bal span+span{text-align:right}
+.inv .iwb{display:flex;gap:6mm;border:.35mm solid var(--acc);background:var(--soft);border-radius:2mm;padding:4.5mm 5mm;margin-top:7mm;break-inside:avoid}
+.inv.inv-bw .iwb{border-color:#111;background:#fff}
+.inv .iwb .qr{flex:none;width:34mm;text-align:center}
+.inv .iwb .qr .q{background:#fff;padding:2mm;display:inline-block}
+.inv .iwb .qr .q img,.inv .iwb .qr .q canvas{width:27mm!important;height:27mm!important;display:block}
+.inv .iwb .qr small{display:block;font-size:8pt;font-weight:600;margin-top:1.5mm;line-height:1.35}
+.inv .iwb .wt{flex:1;min-width:0}
+.inv .iwb h4{font-size:11.5pt;font-weight:700;color:var(--acc);margin-bottom:2mm}
+.inv.inv-bw .iwb h4{color:#111}
+.inv .iwb .wl{display:flex;justify-content:space-between;gap:4mm;padding:1.6mm 0;border-bottom:.3mm dashed #9CA3AF;font-size:10pt}
+.inv .iwb .wl b{white-space:nowrap}
+.inv .iwb p{font-size:8.3pt;color:#374151;margin-top:2mm;line-height:1.45}
+.inv .ft{display:flex;justify-content:space-between;gap:8mm;margin-top:8mm}
+.inv .ft .bank div{font-size:10pt}
+.inv .sign{text-align:right;width:75mm}
+.inv .sign b{display:block;font-size:10.5pt}
+.inv .sign .sl{margin-top:17mm;border-top:.5mm solid var(--dark);padding-top:2.2mm;text-align:center;font-size:8.5pt;letter-spacing:.14em}
+.inv .thanks{border-top:.5mm solid var(--acc);margin-top:8mm;padding-top:2.5mm;text-align:center;font-size:8.5pt;color:#374151}
+.inv td,.inv th{font-variant-numeric:normal}
+.inv .iwb .wl b{color:var(--txt)}
