@@ -1,0 +1,10 @@
+# Used by the Supabase CLI when deploying the Edge Functions.
+# All three check the caller themselves, so the gateway's JWT check is off.
+[functions.auth-login]
+verify_jwt = false
+
+[functions.change-pin]
+verify_jwt = false
+
+[functions.admin-users]
+verify_jwt = false

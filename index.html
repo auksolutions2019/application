@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#0f1f3d">
+<title>First Choice Laptops – Stock Manager</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="assets/icon-192.png">
+<link rel="apple-touch-icon" href="assets/icon-192.png">
+<link rel="stylesheet" href="css/fonts.css">
+<link rel="stylesheet" href="css/app.css">
+<!-- Libraries are bundled locally: no CDN at runtime -->
+<script src="lib/supabase.js"></script>
+<script src="lib/qrcode.min.js"></script>
+<script src="lib/jsQR.js"></script>
+<script src="lib/html5-qrcode.min.js"></script>
+<script src="config.js"></script>
+<script type="module" src="app.js"></script>
+</head>
+<body>
+
+<div id="login"><div class="loginbox">
+ <img src="assets/logo.jpg" alt="First Choice Laptops">
+ <h2 style="margin:14px 0 4px;font-size:22px">Stock Manager</h2>
+ <p class="muted" id="lsub">Enter your mobile number and PIN</p>
+ <div id="lbody"></div>
+</div></div>
+
+<div id="app" class="hidden">
+ <div id="offline" class="hidden">You are offline. You can look, but nothing can be saved.</div>
+ <header>
+  <img src="assets/logo-mark.jpg" alt="First Choice Laptops">
+  <div class="t"><b id="ptitle">Home</b><small>First Choice Laptops, <span id="who"></span><span id="syncdot" class="off" title="Live sync"></span></small></div>
+  <button onclick="A.logout()" aria-label="Log out" id="outbtn"></button>
+ </header>
+ <main id="main"></main>
+ <div class="dock" id="dock"></div>
+</div>
+
+<div id="modal" class="modal hidden" onclick="if(event.target===this)A.closeModal()"><div class="sheet" id="sheet"></div></div>
+<div id="printArea"></div>
+<div id="tip"></div>
+<div id="toasts" aria-live="polite"></div>
+<div id="dlg" class="dlg hidden"></div>
+</body>
+</html>

@@ -47,7 +47,7 @@ language sql immutable set search_path = '' as $$
 $$;
 
 -- ---------- users ----------
-create table public.profiles (
+create table if not exists public.profiles (
   id            uuid primary key references auth.users(id) on delete restrict,
   name          text not null check (length(btrim(name)) between 1 and 80),
   mobile        text not null unique check (mobile ~ '^[6-9][0-9]{9}$'),
@@ -60,16 +60,16 @@ create table public.profiles (
 
 -- One row per PIN login, written by the auth-login Edge Function.
 -- private.my_role() only accepts sessions younger than 7 days.
-create table public.app_sessions (
+create table if not exists public.app_sessions (
   session_id uuid primary key,
   user_id    uuid not null references public.profiles(id) on delete cascade,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
-create index on public.app_sessions (user_id);
+create index if not exists app_sessions_user_id_idx on public.app_sessions (user_id);
 
 -- Wrong-PIN counter, written only by Edge Functions (service role).
-create table public.login_attempts (
+create table if not exists public.login_attempts (
   mobile       text primary key,
   failed_count int not null default 0,
   locked_until timestamptz,
@@ -78,7 +78,7 @@ create table public.login_attempts (
 );
 
 -- ---------- settings (single row) ----------
-create table public.settings (
+create table if not exists public.settings (
   id                      int primary key default 1 check (id = 1),
   shop_name               text not null default 'First Choice Laptops',
   phone                   text not null default '+91 99168 76350',
@@ -93,7 +93,7 @@ create table public.settings (
 );
 
 -- ---------- suppliers, lots, lines, laptops ----------
-create table public.suppliers (
+create table if not exists public.suppliers (
   id         uuid primary key default gen_random_uuid(),
   code       text not null unique check (code ~ '^[0-9]{2}$'),   -- '00' = customer exchange
   name       text not null check (length(btrim(name)) between 1 and 80),
@@ -103,7 +103,7 @@ create table public.suppliers (
   updated_at timestamptz not null default now()
 );
 
-create table public.lots (
+create table if not exists public.lots (
   id          uuid primary key default gen_random_uuid(),
   supplier_id uuid not null references public.suppliers(id),
   lot_no      int  not null check (lot_no between 1 and 99),
@@ -117,7 +117,7 @@ create table public.lots (
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now()
 );
-create index on public.lots (supplier_id);
+create index if not exists lots_supplier_id_idx on public.lots (supplier_id);
 
 -- Spec value lists (kept in one place so app and database agree)
 create or replace function private.brands() returns text[] language sql immutable as
@@ -126,7 +126,7 @@ create or replace function private.processors() returns text[] language sql immu
   $$ select array['i3','i5','i7','i9','Pentium','Celeron','Ryzen 3','Ryzen 5','Ryzen 7','Other'] $$;
 
 -- One lot has one or more lines (model, specs, qty, cost). A "Mixed" line has unknown models.
-create table public.lot_lines (
+create table if not exists public.lot_lines (
   id              uuid primary key default gen_random_uuid(),
   lot_id          uuid not null references public.lots(id) on delete cascade,
   line_no         int  not null check (line_no between 1 and 99),
@@ -147,7 +147,7 @@ create table public.lot_lines (
 );
 
 -- Admin only. What was paid for a line. No row = cost missing.
-create table public.lot_line_costs (
+create table if not exists public.lot_line_costs (
   line_id    uuid primary key references public.lot_lines(id) on delete cascade,
   line_cost  numeric(12,2) not null check (line_cost >= 0),
   created_by uuid references public.profiles(id) default auth.uid(),
@@ -155,7 +155,7 @@ create table public.lot_line_costs (
   updated_at timestamptz not null default now()
 );
 
-create table public.laptops (
+create table if not exists public.laptops (
   id              uuid primary key default gen_random_uuid(),
   lot_id          uuid not null references public.lots(id),
   line_id         uuid not null references public.lot_lines(id),
@@ -174,7 +174,7 @@ create table public.laptops (
                   (private.shorthand(brand, brand_other, processor, processor_other, gen, ram_gb, storage_type, storage_gb)) stored,
   serial          text not null default '',
   grade           text not null default '' check (grade in ('','A','B','C')),
-  status          text not null default 'in_stock' check (status in ('in_stock','booked','sold')),
+  status          text not null default 'in_stock' check (status in ('in_stock','booked','sold','at_service')),
   notes           text not null default '' check (length(notes) <= 300),
   test_note       text not null default '',
   tested_on       date,
@@ -184,14 +184,14 @@ create table public.laptops (
   updated_at      timestamptz not null default now(),
   unique (lot_id, piece_no)
 );
-create unique index laptops_serial_uniq on public.laptops (upper(btrim(serial))) where btrim(serial) <> '';
-create index on public.laptops (status);
-create index on public.laptops (line_id);
-create index on public.laptops (lower(shorthand));
-create index on public.laptops (processor, gen, ram_gb, storage_gb);
+create unique index if not exists laptops_serial_uniq on public.laptops (upper(btrim(serial))) where btrim(serial) <> '';
+create index if not exists laptops_status_idx on public.laptops (status);
+create index if not exists laptops_line_id_idx on public.laptops (line_id);
+create index if not exists laptops_shorthand_idx on public.laptops (lower(shorthand));
+create index if not exists laptops_processor_gen_ram_gb_storage_gb_idx on public.laptops (processor, gen, ram_gb, storage_gb);
 
 -- Admin only. Purchase cost of each laptop, written from its line. No row = cost missing.
-create table public.laptop_costs (
+create table if not exists public.laptop_costs (
   laptop_id  uuid primary key references public.laptops(id) on delete cascade,
   cost       numeric(12,2) not null check (cost >= 0),
   source     text not null check (source in ('lot','exchange','import')),
@@ -200,7 +200,7 @@ create table public.laptop_costs (
   updated_at timestamptz not null default now()
 );
 
-create table public.laptop_tests (
+create table if not exists public.laptop_tests (
   laptop_id  uuid not null references public.laptops(id) on delete cascade,
   test       text not null check (test in ('Display','Keyboard','Touchpad','Battery','Charging','USB ports','Wi-Fi','Audio','Camera','Storage')),
   result     text not null check (result in ('pass','fail')),
@@ -211,7 +211,7 @@ create table public.laptop_tests (
 );
 
 -- Parts bought for a lot (not for one laptop). Shared across the line, or the whole lot when line_id is null.
-create table public.lot_expenses (
+create table if not exists public.lot_expenses (
   id         uuid primary key default gen_random_uuid(),
   lot_id     uuid not null references public.lots(id),
   line_id    uuid references public.lot_lines(id),
@@ -228,12 +228,12 @@ create table public.lot_expenses (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
-create index on public.lot_expenses (lot_id);
-create index on public.lot_expenses (spent_on);
+create index if not exists lot_expenses_lot_id_idx on public.lot_expenses (lot_id);
+create index if not exists lot_expenses_spent_on_idx on public.lot_expenses (spent_on);
 
 -- Work on one laptop. lot_expense_id set = one unit fitted from that lot expense
 -- (its amount then leaves the shared pool, so it is never counted twice).
-create table public.repairs (
+create table if not exists public.repairs (
   id             uuid primary key default gen_random_uuid(),
   laptop_id      uuid not null references public.laptops(id),
   lot_expense_id uuid references public.lot_expenses(id),
@@ -246,11 +246,11 @@ create table public.repairs (
   created_at     timestamptz not null default now(),
   updated_at     timestamptz not null default now()
 );
-create index on public.repairs (laptop_id);
-create index on public.repairs (lot_expense_id);
-create index on public.repairs (done_on);
+create index if not exists repairs_laptop_id_idx on public.repairs (laptop_id);
+create index if not exists repairs_lot_expense_id_idx on public.repairs (lot_expense_id);
+create index if not exists repairs_done_on_idx on public.repairs (done_on);
 
-create table public.photos (
+create table if not exists public.photos (
   id         uuid primary key default gen_random_uuid(),
   laptop_id  uuid not null references public.laptops(id),
   url        text not null check (url ~ '^https://res\.cloudinary\.com/[^\s"''<>]+$'),
@@ -258,13 +258,13 @@ create table public.photos (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
-create index on public.photos (laptop_id);
+create index if not exists photos_laptop_id_idx on public.photos (laptop_id);
 
 -- ---------- customers, sales, bookings ----------
 create or replace function private.lead_sources() returns text[] language sql immutable as
   $$ select array['OLX','Instagram','Lead Matrix','Circle app','Octo','Walk-in','Old customer','Dealer','Other'] $$;
 
-create table public.customers (
+create table if not exists public.customers (
   id            uuid primary key default gen_random_uuid(),
   mobile        text not null unique check (mobile ~ '^[0-9]{6,15}$'),
   name          text not null default '',
@@ -273,9 +273,9 @@ create table public.customers (
   created_at    timestamptz not null default now(),
   updated_at    timestamptz not null default now()
 );
-create index on public.customers (lower(name));
+create index if not exists customers_name_idx on public.customers (lower(name));
 
-create table public.bookings (
+create table if not exists public.bookings (
   id               uuid primary key default gen_random_uuid(),
   laptop_id        uuid not null references public.laptops(id),
   customer_id      uuid not null references public.customers(id),   -- a booking always needs a mobile
@@ -294,10 +294,10 @@ create table public.bookings (
   created_at       timestamptz not null default now(),
   updated_at       timestamptz not null default now()
 );
-create unique index bookings_one_open on public.bookings (laptop_id) where status = 'open';
-create index on public.bookings (customer_id);
+create unique index if not exists bookings_one_open on public.bookings (laptop_id) where status = 'open';
+create index if not exists bookings_customer_id_idx on public.bookings (customer_id);
 
-create table public.booking_payments (
+create table if not exists public.booking_payments (
   id         uuid primary key default gen_random_uuid(),
   booking_id uuid not null references public.bookings(id),
   paid_on    date not null,
@@ -308,10 +308,10 @@ create table public.booking_payments (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
-create index on public.booking_payments (booking_id);
-create index on public.booking_payments (paid_on);
+create index if not exists booking_payments_booking_id_idx on public.booking_payments (booking_id);
+create index if not exists booking_payments_paid_on_idx on public.booking_payments (paid_on);
 
-create table public.sales (
+create table if not exists public.sales (
   id               uuid primary key default gen_random_uuid(),
   laptop_id        uuid not null references public.laptops(id),
   customer_id      uuid references public.customers(id),            -- null = no mobile given
@@ -334,12 +334,12 @@ create table public.sales (
   check (warranty_months = 0 or customer_id is not null)          -- warranty needs a mobile
 );
 -- A laptop can never have two live sales.
-create unique index sales_one_active on public.sales (laptop_id) where status = 'active';
-create index on public.sales (customer_id);
-create index on public.sales (sold_on);
-create index on public.sales (lead_source);
+create unique index if not exists sales_one_active on public.sales (laptop_id) where status = 'active';
+create index if not exists sales_customer_id_idx on public.sales (customer_id);
+create index if not exists sales_sold_on_idx on public.sales (sold_on);
+create index if not exists sales_lead_source_idx on public.sales (lead_source);
 
-create table public.sale_payments (
+create table if not exists public.sale_payments (
   id                 uuid primary key default gen_random_uuid(),
   sale_id            uuid not null references public.sales(id),
   paid_on            date not null,
@@ -353,10 +353,10 @@ create table public.sale_payments (
   updated_at         timestamptz not null default now(),
   check ((reversal_of is null) = (amount > 0))
 );
-create index on public.sale_payments (sale_id);
-create index on public.sale_payments (paid_on);
+create index if not exists sale_payments_sale_id_idx on public.sale_payments (sale_id);
+create index if not exists sale_payments_paid_on_idx on public.sale_payments (paid_on);
 
-create table public.returns (
+create table if not exists public.returns (
   id          uuid primary key default gen_random_uuid(),
   sale_id     uuid not null unique references public.sales(id),
   laptop_id   uuid not null references public.laptops(id),
@@ -366,9 +366,9 @@ create table public.returns (
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now()
 );
-create index on public.returns (laptop_id);
+create index if not exists returns_laptop_id_idx on public.returns (laptop_id);
 
-create table public.refunds (
+create table if not exists public.refunds (
   id          uuid primary key default gen_random_uuid(),
   return_id   uuid references public.returns(id),
   booking_id  uuid references public.bookings(id),
@@ -382,10 +382,10 @@ create table public.refunds (
   updated_at  timestamptz not null default now(),
   check (num_nonnulls(return_id, booking_id) <= 1)
 );
-create index on public.refunds (refunded_on);
+create index if not exists refunds_refunded_on_idx on public.refunds (refunded_on);
 
 -- ---------- what the shop owes and spends ----------
-create table public.supplier_payments (
+create table if not exists public.supplier_payments (
   id          uuid primary key default gen_random_uuid(),
   supplier_id uuid not null references public.suppliers(id),
   paid_on     date not null,
@@ -398,10 +398,10 @@ create table public.supplier_payments (
   updated_at  timestamptz not null default now(),
   check ((reversal_of is null) = (amount > 0))
 );
-create index on public.supplier_payments (supplier_id);
-create index on public.supplier_payments (paid_on);
+create index if not exists supplier_payments_supplier_id_idx on public.supplier_payments (supplier_id);
+create index if not exists supplier_payments_paid_on_idx on public.supplier_payments (paid_on);
 
-create table public.debts (
+create table if not exists public.debts (
   id         uuid primary key default gen_random_uuid(),
   name       text not null check (length(btrim(name)) between 1 and 120),
   type       text not null check (type in ('Shop rent','Loan','Borrowed','Bill','Other')),
@@ -414,7 +414,7 @@ create table public.debts (
   updated_at timestamptz not null default now()
 );
 
-create table public.debt_payments (
+create table if not exists public.debt_payments (
   id          uuid primary key default gen_random_uuid(),
   debt_id     uuid not null references public.debts(id),
   paid_on     date not null,
@@ -427,12 +427,12 @@ create table public.debt_payments (
   updated_at  timestamptz not null default now(),
   check ((reversal_of is null) = (amount > 0))
 );
-create index on public.debt_payments (debt_id);
-create index on public.debt_payments (paid_on);
+create index if not exists debt_payments_debt_id_idx on public.debt_payments (debt_id);
+create index if not exists debt_payments_paid_on_idx on public.debt_payments (paid_on);
 
 -- Running costs not tied to a lot. Payments of Shop rent / Bill debts are added to these
 -- automatically in reports ("from Liabilities"), so they are never entered here twice.
-create table public.shop_expenses (
+create table if not exists public.shop_expenses (
   id         uuid primary key default gen_random_uuid(),
   spent_on   date not null default private.today(),
   type       text not null check (type in ('Rent','Electricity','Salary','Internet','Transport','Other')),
@@ -446,11 +446,11 @@ create table public.shop_expenses (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
-create index on public.shop_expenses (spent_on);
+create index if not exists shop_expenses_spent_on_idx on public.shop_expenses (spent_on);
 
 -- ---------- prices and log ----------
 -- Usual selling price per shorthand ("Dell i5 7th 8/256").
-create table public.model_prices (
+create table if not exists public.model_prices (
   shorthand  text primary key check (length(btrim(shorthand)) between 1 and 120),
   price      numeric(12,2) not null check (price > 0),
   updated_by uuid references public.profiles(id) default auth.uid(),
@@ -458,7 +458,7 @@ create table public.model_prices (
   updated_at timestamptz not null default now()
 );
 
-create table public.activity_log (
+create table if not exists public.activity_log (
   id         bigint generated always as identity primary key,
   at         timestamptz not null default now(),
   actor_id   uuid references public.profiles(id),
@@ -472,10 +472,86 @@ create table public.activity_log (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
-create index on public.activity_log (at desc);
+create index if not exists activity_log_at_desc_idx on public.activity_log (at desc);
+
+-- ---------- service partners (outside technicians and repair shops) ----------
+create or replace function private.service_skills() returns text[] language sql immutable as
+  $$ select array['Chip-level','Screen','Keyboard','Battery','Hinge/body','Software','Other'] $$;
+
+create table if not exists public.service_partners (
+  id         uuid primary key default gen_random_uuid(),
+  name       text not null check (length(btrim(name)) between 1 and 80),
+  mobile     text not null default '' check (mobile = '' or mobile ~ '^[0-9]{6,15}$'),
+  shop_name  text not null default '',
+  address    text not null default '',
+  skills     text[] not null default '{}' check (skills <@ private.service_skills()),
+  active     boolean not null default true,
+  created_by uuid references public.profiles(id) default auth.uid(),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+-- One trip of one laptop to a partner. kind: stock laptop, or a customer's laptop back under warranty.
+create table if not exists public.service_jobs (
+  id          uuid primary key default gen_random_uuid(),
+  laptop_id   uuid not null references public.laptops(id),
+  partner_id  uuid not null references public.service_partners(id),
+  kind        text not null check (kind in ('stock','warranty')),
+  sale_id     uuid references public.sales(id),
+  issues      text[] not null default '{}' check (issues <@ private.service_skills()),
+  note        text not null default '',
+  given_on    date not null,
+  expected_on date,
+  status      text not null default 'out' check (status in ('out','returned')),
+  received_on date,
+  work_done   text not null default '',
+  outcome     text check (outcome in ('fixed','not_fixed','no_work')),
+  given_by    uuid references public.profiles(id) default auth.uid(),
+  received_by uuid references public.profiles(id),
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now(),
+  check ((status = 'out') = (received_on is null)),
+  check (kind = 'stock' or sale_id is not null)
+);
+create unique index if not exists service_one_open on public.service_jobs (laptop_id) where status = 'out';
+create index if not exists service_jobs_partner_id_idx on public.service_jobs (partner_id);
+create index if not exists service_jobs_received_on_idx on public.service_jobs (received_on);
+
+-- Admin only. No row = "charge missing" (staff never enter or see charges).
+create table if not exists public.service_charges (
+  job_id     uuid primary key references public.service_jobs(id),
+  charge     numeric(12,2) not null check (charge >= 0),
+  entered_by uuid references public.profiles(id) default auth.uid(),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.service_payments (
+  id          uuid primary key default gen_random_uuid(),
+  partner_id  uuid not null references public.service_partners(id),
+  job_id      uuid references public.service_jobs(id),
+  paid_on     date not null,
+  amount      numeric(12,2) not null check (amount <> 0),
+  method      text not null check (method in ('Cash','UPI','Bank')),
+  ref         text not null default '',
+  reversal_of uuid unique references public.service_payments(id),
+  created_by  uuid references public.profiles(id) default auth.uid(),
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now(),
+  check ((reversal_of is null) = (amount > 0))
+);
+create index if not exists service_payments_partner_id_idx on public.service_payments (partner_id);
+create index if not exists service_payments_paid_on_idx on public.service_payments (paid_on);
+
+-- Live sync: one tiny row per change. Every role may read it (it carries no data), so every phone
+-- refreshes, including staff who cannot read the activity log itself.
+create table if not exists public.sync_ticks (
+  id bigint generated always as identity primary key,
+  at timestamptz not null default now()
+);
 
 -- Idempotency: a retried or double-tapped save returns the first result.
-create table private.rpc_requests (
+create table if not exists private.rpc_requests (
   client_ref uuid primary key,
   result     jsonb,
   created_at timestamptz not null default now()
@@ -487,8 +563,10 @@ declare t text;
 begin
   foreach t in array array['profiles','app_sessions','login_attempts','settings','suppliers','lots','lot_lines','lot_line_costs','laptops',
     'laptop_costs','laptop_tests','lot_expenses','repairs','photos','customers','bookings','booking_payments','sales',
-    'sale_payments','returns','refunds','supplier_payments','debts','debt_payments','shop_expenses','model_prices']
+    'sale_payments','returns','refunds','supplier_payments','debts','debt_payments','shop_expenses','model_prices',
+    'service_partners','service_jobs','service_charges','service_payments']
   loop
+    execute format('drop trigger if exists touch on public.%I', t);
     execute format('create trigger touch before update on public.%I for each row execute function private.touch()', t);
   end loop;
 end $$;

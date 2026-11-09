@@ -101,10 +101,18 @@ language sql stable set search_path = '' as $$
   where l.id = p_laptop
 $$;
 
+-- Service charges on this laptop while it was shop stock (warranty jobs are counted separately).
+create or replace function private.service_cost(p_laptop uuid) returns numeric
+language sql stable set search_path = '' as $$
+  select coalesce(sum(c.charge), 0) from public.service_jobs j join public.service_charges c on c.job_id = j.id
+  where j.laptop_id = p_laptop and j.kind = 'stock'
+$$;
+
 -- Everything this laptop cost the shop. Null when the purchase cost is missing.
 create or replace function private.full_cost(p_laptop uuid) returns numeric
 language sql stable set search_path = '' as $$
   select private.cost_of(p_laptop) + private.repairs_of(p_laptop) + private.lot_share(p_laptop)
+       + private.service_cost(p_laptop)
 $$;
 
 create or replace function private.sale_paid(p_sale uuid) returns numeric
@@ -202,6 +210,17 @@ begin
   return v_adv;
 end $$;
 
+-- A laptop at service cannot be sold, booked, handed over, returned or undone.
+create or replace function private.service_guard(p_laptop uuid) returns void
+language plpgsql stable set search_path = '' as $$
+declare j record;
+begin
+  select private.partner_label(partner_id) p, given_on into j from public.service_jobs where laptop_id = p_laptop and status = 'out';
+  if found then
+    raise exception 'This laptop is with % since %', j.p, to_char(j.given_on, 'DD/MM/YYYY');
+  end if;
+end $$;
+
 -- Core of a single sale (also used to complete a booking).
 create or replace function private.do_sell(
   p_laptop_id uuid, p_name text, p_mobile text, p_address text, p_lead text, p_type text,
@@ -219,6 +238,7 @@ declare
 begin
   select * into l from public.laptops where id = p_laptop_id for update;
   if not found then raise exception 'Laptop not found.'; end if;
+  perform private.service_guard(l.id);
   if l.status = 'sold' then raise exception '% is already sold.', l.code; end if;
 
   select * into bk from public.bookings where laptop_id = l.id and status = 'open' for update;
@@ -626,6 +646,8 @@ begin
   get diagnostics v_found = row_count;
   if v_found <> v_n then raise exception 'Some ticked laptops were not found. Refresh and try again.'; end if;
 
+  select string_agg(code, ', ' order by code) into v_list from public.laptops where id = any(p_laptop_ids) and status = 'at_service';
+  if v_list is not null then raise exception 'At service, cannot be sold: %', v_list; end if;
   select string_agg(code, ', ' order by code) into v_list from public.laptops where id = any(p_laptop_ids) and status = 'sold';
   if v_list is not null then raise exception 'Already sold: %', v_list; end if;
   select string_agg(code, ', ' order by code) into v_list from public.laptops where id = any(p_laptop_ids) and status = 'booked';
@@ -749,6 +771,7 @@ begin
   v := private.idem_get(p_client_ref); if v is not null then return v; end if;
   select * into l from public.laptops where id = p_laptop_id for update;
   if not found then raise exception 'Laptop not found.'; end if;
+  perform private.service_guard(l.id);
   if l.status = 'sold' then raise exception '% is already sold.', l.code; end if;
   if l.status = 'booked' then raise exception '% is already booked.', l.code; end if;
   if private.norm_mobile(p_mobile) is null then raise exception 'Enter the customer mobile to book'; end if;
@@ -823,6 +846,7 @@ begin
   select * into s from public.sales where id = p_sale_id for update;
   if not found or s.status <> 'active' then raise exception 'This sale is no longer active. Refresh and try again.'; end if;
   select code into v_code from public.laptops where id = s.laptop_id for update;
+  perform private.service_guard(s.laptop_id);
   select coalesce(sum(amount), 0) into v_cash from public.sale_payments where sale_id = s.id and method <> 'Exchange';
   if v_refund < 0 or v_refund > v_cash then raise exception 'Refund can be from 0 up to %', private.rs(v_cash); end if;
   if v_refund > 0 then perform private.check_amount(v_refund, 'the refund'); perform private.check_method(p_method); end if;
@@ -850,6 +874,7 @@ begin
   select * into s from public.sales where id = p_sale_id for update;
   if not found or s.status <> 'active' then raise exception 'This sale is no longer active. Refresh and try again.'; end if;
   perform 1 from public.laptops where id = s.laptop_id for update;
+  perform private.service_guard(s.laptop_id);
 
   insert into public.sale_payments (sale_id, paid_on, amount, method, ref, reversal_of)
   select p.sale_id, private.today(), -p.amount, p.method, p.ref, p.id

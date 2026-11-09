@@ -55,6 +55,7 @@ begin
   end loop;
   return null;
 end $$;
+drop trigger if exists log_ins on public.laptops;
 create trigger log_ins after insert on public.laptops referencing new table as new_rows
   for each statement execute function private.log_laptops_ins();
 
@@ -69,6 +70,7 @@ begin
   if new.test_note is distinct from old.test_note then perform private.log('edit', 'laptop', new.code, format('Changed test notes of %s to "%s"', new.code, new.test_note)); end if;
   return null;
 end $$;
+drop trigger if exists log_upd on public.laptops;
 create trigger log_upd after update on public.laptops for each row execute function private.log_laptops_upd();
 
 -- ---------- costs (admin only) ----------
@@ -86,6 +88,7 @@ begin
   end loop;
   return null;
 end $$;
+drop trigger if exists log_ins on public.laptop_costs;
 create trigger log_ins after insert on public.laptop_costs referencing new table as new_rows
   for each statement execute function private.log_costs_ins();
 
@@ -108,6 +111,7 @@ begin
   end loop;
   return null;
 end $$;
+drop trigger if exists log_ins on public.laptop_tests;
 create trigger log_ins after insert on public.laptop_tests referencing new table as new_rows
   for each statement execute function private.log_tests_ins();
 
@@ -125,6 +129,7 @@ begin
   end if;
   return null;
 end $$;
+drop trigger if exists log_chg on public.repairs;
 create trigger log_chg after insert or update on public.repairs for each row execute function private.log_repairs();
 
 create or replace function private.log_photos() returns trigger
@@ -134,6 +139,7 @@ begin
   perform private.log('photo', 'laptop', c, format('Added a photo to %s', c));
   return null;
 end $$;
+drop trigger if exists log_ins on public.photos;
 create trigger log_ins after insert on public.photos for each row execute function private.log_photos();
 
 -- ---------- sales and payments ----------
@@ -152,6 +158,7 @@ begin
   end if;
   return null;
 end $$;
+drop trigger if exists log_chg on public.sales;
 create trigger log_chg after insert or update on public.sales for each row execute function private.log_sales();
 
 create or replace function private.log_sale_payments() returns trigger
@@ -167,6 +174,7 @@ begin
     format('Received %s (%s) from %s for %s', private.rs(new.amount), new.method, s.customer_name, s.code));
   return null;
 end $$;
+drop trigger if exists log_ins on public.sale_payments;
 create trigger log_ins after insert on public.sale_payments for each row execute function private.log_sale_payments();
 
 -- ---------- bookings ----------
@@ -187,6 +195,7 @@ begin
   end if;
   return null;
 end $$;
+drop trigger if exists log_chg on public.bookings;
 create trigger log_chg after insert or update on public.bookings for each row execute function private.log_bookings();
 
 create or replace function private.log_booking_payments() returns trigger
@@ -198,6 +207,7 @@ begin
     format('Advance %s (%s) from %s for %s', private.rs(new.amount), new.method, b.customer_name, b.code));
   return null;
 end $$;
+drop trigger if exists log_ins on public.booking_payments;
 create trigger log_ins after insert on public.booking_payments for each row execute function private.log_booking_payments();
 
 create or replace function private.log_refunds() returns trigger
@@ -206,6 +216,7 @@ begin
   perform private.log('refund', 'refund', new.id::text, format('Refund %s (%s): %s', private.rs(new.amount), new.method, new.note));
   return null;
 end $$;
+drop trigger if exists log_ins on public.refunds;
 create trigger log_ins after insert on public.refunds for each row execute function private.log_refunds();
 
 -- ---------- suppliers, debts (money lines are admin only) ----------
@@ -217,6 +228,7 @@ begin
   end if;
   return null;
 end $$;
+drop trigger if exists log_ins on public.suppliers;
 create trigger log_ins after insert on public.suppliers for each row execute function private.log_suppliers();
 
 create or replace function private.log_supplier_payments() returns trigger
@@ -229,6 +241,7 @@ begin
            private.rs(abs(new.amount)), new.method, n), true);
   return null;
 end $$;
+drop trigger if exists log_ins on public.supplier_payments;
 create trigger log_ins after insert on public.supplier_payments for each row execute function private.log_supplier_payments();
 
 create or replace function private.log_debts() returns trigger
@@ -241,6 +254,7 @@ begin
   end if;
   return null;
 end $$;
+drop trigger if exists log_chg on public.debts;
 create trigger log_chg after insert or update on public.debts for each row execute function private.log_debts();
 
 create or replace function private.log_debt_payments() returns trigger
@@ -253,6 +267,7 @@ begin
            private.rs(abs(new.amount)), new.method, n), true);
   return null;
 end $$;
+drop trigger if exists log_ins on public.debt_payments;
 create trigger log_ins after insert on public.debt_payments for each row execute function private.log_debt_payments();
 
 -- ---------- lot expenses, shop expenses ----------
@@ -268,6 +283,7 @@ begin
   end if;
   return null;
 end $$;
+drop trigger if exists log_chg on public.lot_expenses;
 create trigger log_chg after insert or update on public.lot_expenses for each row execute function private.log_lot_expenses();
 
 create or replace function private.log_shop_expenses() returns trigger
@@ -283,6 +299,7 @@ begin
   end if;
   return null;
 end $$;
+drop trigger if exists log_chg on public.shop_expenses;
 create trigger log_chg after insert or update on public.shop_expenses for each row execute function private.log_shop_expenses();
 
 -- ---------- prices, settings ----------
@@ -296,6 +313,7 @@ begin
   end if;
   return null;
 end $$;
+drop trigger if exists log_chg on public.model_prices;
 create trigger log_chg after insert or update or delete on public.model_prices for each row execute function private.log_prices();
 
 create or replace function private.log_settings() returns trigger
@@ -304,12 +322,91 @@ begin
   perform private.log('settings', 'settings', '1', 'Changed settings');
   return null;
 end $$;
+drop trigger if exists log_upd on public.settings;
 create trigger log_upd after update on public.settings for each row execute function private.log_settings();
 
--- Live sync: both phones listen for new activity lines.
+-- ---------- service partners ----------
+create or replace function private.partner_label(p_id uuid) returns text
+language sql stable set search_path = '' as $$
+  select coalesce(nullif(btrim(shop_name), ''), name) from public.service_partners where id = p_id
+$$;
+
+create or replace function private.actor_name() returns text
+language sql stable security definer set search_path = '' as $$
+  select coalesce((select name from public.profiles where id = auth.uid()), 'Someone')
+$$;
+
+create or replace function private.log_partners() returns trigger
+language plpgsql security definer set search_path = '' as $$
+begin
+  if tg_op = 'INSERT' then
+    perform private.log('partner', 'partner', new.id::text, format('Added service partner %s', private.partner_label(new.id)));
+  elsif new.active is distinct from old.active then
+    perform private.log('partner', 'partner', new.id::text,
+      format('%s service partner %s', case when new.active then 'Turned on' else 'Turned off' end, private.partner_label(new.id)));
+  end if;
+  return null;
+end $$;
+drop trigger if exists log_chg on public.service_partners;
+create trigger log_chg after insert or update on public.service_partners for each row execute function private.log_partners();
+
+-- "Imran gave 01-04-11-26-003 to Ravi Chip Repair for screen"
+create or replace function private.log_service_jobs() returns trigger
+language plpgsql security definer set search_path = '' as $$
+declare c text := private.lap_code(new.laptop_id); p text := private.partner_label(new.partner_id);
+begin
+  if tg_op = 'INSERT' then
+    perform private.log('service_out', 'laptop', c, format('%s gave %s to %s for %s%s', private.actor_name(), c, p,
+      coalesce(nullif(lower(array_to_string(new.issues, ', ')), ''), 'service'),
+      case when new.kind = 'warranty' then ' (warranty)' else '' end));
+  elsif new.status = 'returned' and old.status = 'out' then
+    perform private.log('service_back', 'laptop', c, format('%s received %s back from %s: %s', private.actor_name(), c, p,
+      case new.outcome when 'fixed' then 'fixed' when 'not_fixed' then 'not fixed' else 'returned without work' end));
+  end if;
+  return null;
+end $$;
+drop trigger if exists log_chg on public.service_jobs;
+create trigger log_chg after insert or update on public.service_jobs for each row execute function private.log_service_jobs();
+
+create or replace function private.log_service_charges() returns trigger
+language plpgsql security definer set search_path = '' as $$
+declare j record;
+begin
+  select laptop_id, partner_id into j from public.service_jobs where id = new.job_id;
+  perform private.log('service_charge', 'laptop', private.lap_code(j.laptop_id),
+    format('Service charge %s for %s (%s)', private.rs(new.charge), private.lap_code(j.laptop_id), private.partner_label(j.partner_id)), true);
+  return null;
+end $$;
+drop trigger if exists log_chg on public.service_charges;
+create trigger log_chg after insert or update on public.service_charges for each row execute function private.log_service_charges();
+
+create or replace function private.log_service_payments() returns trigger
+language plpgsql security definer set search_path = '' as $$
+begin
+  perform private.log('service_payment', 'partner', new.partner_id::text,
+    format('Paid %s (%s) to service partner %s', private.rs(new.amount), new.method, private.partner_label(new.partner_id)), true);
+  return null;
+end $$;
+drop trigger if exists log_ins on public.service_payments;
+create trigger log_ins after insert on public.service_payments for each row execute function private.log_service_payments();
+
+-- ---------- live sync ----------
+-- Every activity line also drops a data-free tick that all roles can receive through Realtime.
+create or replace function private.tick() returns trigger
+language plpgsql security definer set search_path = '' as $$
+begin
+  insert into public.sync_ticks default values;
+  delete from public.sync_ticks where at < now() - interval '1 hour';
+  return null;
+end $$;
+drop trigger if exists tick on public.activity_log;
+create trigger tick after insert on public.activity_log for each statement execute function private.tick();
+
 do $$
 begin
-  if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
-    alter publication supabase_realtime add table public.activity_log;
+  if exists (select 1 from pg_publication where pubname = 'supabase_realtime')
+     and not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime'
+                     and schemaname = 'public' and tablename = 'sync_ticks') then
+    alter publication supabase_realtime add table public.sync_ticks;
   end if;
 end $$;

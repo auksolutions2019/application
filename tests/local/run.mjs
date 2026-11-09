@@ -22,10 +22,24 @@ const eq = (a, b, name) => ok(String(a) === String(b), name, `(got ${JSON.string
 
 // ---------- setup ----------
 await db.exec(readFileSync(join(here, 'supabase_stub.sql'), 'utf8'));
-for (const f of readdirSync(migDir).filter(f => f.endsWith('.sql')).sort()) {
-  try { await db.exec(readFileSync(join(migDir, f), 'utf8')); }
-  catch (e) { console.error(`Migration ${f} failed: ${e.message}`); process.exit(1); }
-  console.log('migrated', f);
+// --setup: load the single supabase/setup_all.sql (twice, to prove it is safe to re-run); otherwise each migration.
+const useSetup = process.argv.includes('--setup');
+const sources = useSetup ? ['setup_all.sql', 'setup_all.sql (second run)'] : readdirSync(migDir).filter(f => f.endsWith('.sql')).sort();
+for (const f of sources) {
+  const file = useSetup ? join(migDir, '..', 'setup_all.sql') : join(migDir, f);
+  try {
+    const res = await db.exec(readFileSync(file, 'utf8'));
+    if (useSetup) { const last = res.at(-1).rows[0]; console.log(`loaded ${f}: ${last.tables} tables, ${last.tables_with_rls_on} with RLS on`);
+      ok(last.tables === last.tables_with_rls_on && last.tables >= 30, `${f}: every table has RLS on`); }
+    else console.log('migrated', f);
+  } catch (e) { console.error(`${f} failed: ${e.message}`); process.exit(1); }
+}
+if (!useSetup) {   // also prove the migrations can run a second time
+  for (const f of sources) {
+    try { await db.exec(readFileSync(join(migDir, f), 'utf8')); }
+    catch (e) { console.error(`Second run of ${f} failed: ${e.message}`); process.exit(1); }
+  }
+  console.log('all migrations ran a second time without errors');
 }
 
 const U = {
@@ -312,6 +326,75 @@ ok(!(await rpc(U.coadmin, 'get_snapshot')).held_advances.length, 'nothing is lef
 const [, b18] = await bookAs(lot1.codes[18], '9800000018');
 eq((await rpc(U.coadmin, 'cancel_booking', { p_booking_id: b18.booking_id, p_refund: false })).advance_status, 'kept', 'co-admin cancel without refund keeps the advance');
 
+// ---------- service partners ----------
+console.log('\nService partners');
+ok(await rpcErr(U.staff, 'save_service_partner', { p_name: 'X' }), 'staff cannot add a service partner');
+const pt = await rpc(U.coadmin, 'save_service_partner', { p_name: 'Ravi', p_mobile: '98450 12345', p_shop_name: 'Ravi Chip Repair', p_skills: ['Chip-level', 'Screen'] });
+const L19 = await lap(lot1.codes[19]); await passAll(U.admin, L19.id);
+const g19 = await rpc(U.staff, 'give_for_service', { p_laptop_id: L19.id, p_partner_id: pt.partner_id, p_issues: ['Screen'], p_note: 'lines on screen' });
+eq(g19.kind, 'stock', 'an in-stock laptop goes as a stock laptop');
+eq((await lap(L19.code)).status, 'at_service', 'status becomes At service');
+const eSvc = await rpcErr(U.admin, 'sell_laptop', { p_laptop_id: L19.id, p_price: 20000, p_paid: 20000, p_method: 'Cash', p_lead_source: 'OLX', p_override_tests: true });
+ok(eSvc && /This laptop is with Ravi Chip Repair since \d\d\/\d\d\/\d{4}/.test(eSvc.message), 'a laptop at service cannot be sold', eSvc?.message);
+ok(await rpcErr(U.admin, 'book_laptop', { p_laptop_id: L19.id, p_mobile: '9800000019', p_lead_source: 'OLX' }), 'a laptop at service cannot be booked');
+ok(await rpcErr(U.admin, 'sell_laptops_bulk', { p_laptop_ids: [L19.id], p_price_each: 20000, p_total_paid: 20000, p_method: 'Cash', p_mobile: '9800000019' }), 'a laptop at service cannot be bulk sold');
+ok(await rpcErr(U.staff, 'give_for_service', { p_laptop_id: L19.id, p_partner_id: pt.partner_id, p_issues: ['Screen'] }), 'cannot be given twice');
+const svcLog = await one(`select message from public.activity_log where action = 'service_out' order by id desc limit 1`);
+eq(svcLog.message, `Worker gave ${L19.code} to Ravi Chip Repair for screen`, 'activity reads "Worker gave … to Ravi Chip Repair for screen"');
+const pdS = await rpc(U.staff, 'partner_detail', { p_partner_id: pt.partner_id });
+ok(pdS.with_them.length === 1 && pdS.with_them[0].code === L19.code && pdS.money === undefined, 'partner page shows 1 laptop with them, no money for staff');
+const costBefore = +(await rpc(U.admin, 'get_laptop', { p_code: L19.code })).full_cost;
+const eStaffCharge = await rpcErr(U.staff, 'receive_from_service', { p_job_id: g19.job_id, p_outcome: 'fixed', p_charge: 1200 });
+ok(eStaffCharge && /Staff cannot enter service charges/.test(eStaffCharge.message), 'staff cannot enter a charge');
+const eCoPay = await rpcErr(U.coadmin, 'receive_from_service', { p_job_id: g19.job_id, p_outcome: 'fixed', p_charge: 1200, p_paid_now: true });
+ok(eCoPay && /Only the admin can pay/.test(eCoPay.message), 'co-admin cannot pay the partner');
+const r19 = await rpc(U.staff, 'receive_from_service', { p_job_id: g19.job_id, p_outcome: 'fixed', p_work_done: 'screen cable changed' });
+ok(r19.charge_missing === true, 'staff receive leaves the charge missing');
+eq((await lap(L19.code)).status, 'in_stock', 'stock laptop goes back to In stock');
+ok((await rpc(U.coadmin, 'service_jobs_missing_charge')).some(j => j.id === g19.job_id), 'co-admin sees the job waiting for a charge');
+ok((await rpc(U.admin, 'get_laptop', { p_code: L19.code })).service_charge_missing === true, 'admin sees "charge missing" on the laptop');
+await rpc(U.coadmin, 'set_service_charge', { p_job_id: g19.job_id, p_charge: 1200 });
+ok(await rpcErr(U.coadmin, 'set_service_charge', { p_job_id: g19.job_id, p_charge: 100 }), 'co-admin cannot change a charge once entered');
+const costAfter = +(await rpc(U.admin, 'get_laptop', { p_code: L19.code })).full_cost;
+eq(costAfter - costBefore, 1200, 'stock laptop cost goes up by ₹1,200');
+const s19 = await rpc(U.admin, 'sell_laptop', { p_laptop_id: L19.id, p_price: 20000, p_paid: 20000, p_method: 'Cash', p_lead_source: 'OLX' });
+eq((await rpc(U.admin, 'get_laptop', { p_code: L19.code })).sale.profit, +(20000 - costBefore - 1200).toFixed(2), 'profit is ₹1,200 lower');
+for (const t of ['service_charges', 'service_payments']) eq((await as(U.staff, `select count(*) n from public.${t}`)).rows[0].n, 0, `staff reads 0 rows from ${t}`);
+eq((await as(U.coadmin, `select count(*) n from public.service_charges`)).rows[0].n, 0, 'co-admin reads 0 rows from service_charges');
+const hS = JSON.stringify(await rpc(U.staff, 'get_laptop', { p_code: L19.code }));
+ok(!/"charge"|"charge_entered"|"service_cost"|"owed"/.test(hS), 'staff sees no charges on the laptop');
+ok(!/"owed"/.test(JSON.stringify((await rpc(U.coadmin, 'get_snapshot')).partners)), 'co-admin sees no partner totals');
+ok(await rpcErr(U.coadmin, 'pay_service_partner', { p_partner_id: pt.partner_id, p_amount: 100, p_method: 'Cash' }), 'co-admin cannot pay partners');
+// warranty job: sold laptop L3 (balance still due)
+const prof3 = (await rpc(U.admin, 'get_laptop', { p_code: L3.code })).sale.profit;
+const g3 = await rpc(U.staff, 'give_for_service', { p_laptop_id: L3.id, p_partner_id: pt.partner_id, p_issues: ['Keyboard'] });
+eq(g3.kind, 'warranty', 'a sold laptop goes as a warranty laptop');
+ok(await rpcErr(U.admin, 'return_sale', { p_sale_id: s3.sale_id, p_refund: 0 }), 'a sold laptop at service cannot be returned');
+await rpc(U.admin, 'receive_from_service', { p_job_id: g3.job_id, p_outcome: 'fixed', p_charge: 800, p_paid_now: true, p_method: 'Cash', p_ref: 'cash' });
+eq((await lap(L3.code)).status, 'sold', 'warranty laptop goes back to Sold');
+eq((await rpc(U.admin, 'get_laptop', { p_code: L3.code })).sale.profit, prof3, 'a warranty job does not change the profit of the original sale');
+const repS = await rpc(U.admin, 'report_year', { p_year: +today.slice(0, 4) });
+const mS = repS.months[+MM - 1];
+ok(+mS.warranty === 800 && +mS.service_stock === 1200, 'report: stock service ₹1,200 and warranty repairs ₹800, separately', JSON.stringify(mS));
+eq(+(mS.gross - mS.shop - mS.warranty).toFixed(2), mS.net, 'net profit takes off warranty repairs');
+ok((await rpc(U.admin, 'money_day', { p_date: today })).outs.some(x => x.t === 'Service: Ravi Chip Repair' && +x.amt === 800), 'service payment is money out');
+ok(!JSON.stringify((await rpc(U.coadmin, 'money_day', { p_date: today })).outs).includes('Service:'), 'co-admin sees it only inside Business payments');
+const pdA = await rpc(U.admin, 'partner_detail', { p_partner_id: pt.partner_id });
+ok(+pdA.money.charges === 2000 && +pdA.money.paid === 800 && +pdA.money.owed === 1200, 'partner page money: ₹2,000 charges, ₹800 paid, ₹1,200 owed', JSON.stringify(pdA.money));
+eq((await rpc(U.admin, 'get_snapshot')).service_owed, 1200, 'Home: owed to service partners ₹1,200');
+ok(await rpcErr(U.admin, 'pay_service_partner', { p_partner_id: pt.partner_id, p_amount: 1300, p_method: 'Cash' }), 'cannot pay more than is owed');
+await rpc(U.admin, 'pay_service_partner', { p_partner_id: pt.partner_id, p_amount: 1200, p_method: 'UPI', p_ref: 'UTR9' });
+eq((await rpc(U.admin, 'get_snapshot')).service_owed, 0, 'after paying, nothing is owed');
+// partner page count with several laptops out, one overdue
+const back5 = (await one(`select (private.today() - 5)::text d`)).d, back1 = (await one(`select (private.today() - 1)::text d`)).d;
+const lotS = await rpc(U.admin, 'create_lot', { p_supplier_id: sup.id, p_lot_no: 5, p_bought_on: back5, p_lines: [{ is_mixed: true, qty: 3, cost: 30000 }] });
+for (const c of lotS.codes.slice(0, 2)) await rpc(U.staff, 'give_for_service', { p_laptop_id: (await lap(c)).id, p_partner_id: pt.partner_id, p_issues: ['Chip-level'], p_given_on: back5, p_expected_on: back1 });
+const pd2 = await rpc(U.coadmin, 'partner_detail', { p_partner_id: pt.partner_id });
+eq(pd2.with_them.length, 2, 'partner page counts 2 laptops with them now');
+ok(pd2.with_them.every(j => j.overdue && j.days_out === 5), 'past the expected date: marked overdue, 5 days out');
+ok(pd2.history.sent === 4 && pd2.history.returned === 2 && pd2.history.fixed === 2, 'history: 4 sent, 2 returned, 2 fixed', JSON.stringify(pd2.history));
+eq((await rpc(U.staff, 'get_snapshot')).partners.find(p => p.id === pt.partner_id).out_count, 2, 'partner list shows 2 out');
+
 // session expiry and turned-off users
 await db.query(`update public.app_sessions set created_at = now() - interval '8 days' where user_id = $1`, [U.staff.id]);
 const eS = await rpcErr(U.staff, 'get_snapshot');
@@ -329,6 +412,55 @@ ok(lr.some(x => x.lead_source === 'Dealer' && x.n === 3), 'lead report counts th
 const pnl = await rpc(U.admin, 'lot_pnl');
 const p1 = pnl.find(x => x.prefix === `01-01-${MM}-${YY}`);
 ok(p1 && p1.status === 'Part sold' && p1.qty === 20, 'Lot P&L shows lot 1 as Part sold', JSON.stringify(p1));
+
+// ---------- backup and restore (run last: restore replaces everything) ----------
+console.log('\nBackup and restore');
+ok(await rpcErr(U.coadmin, 'export_backup'), 'only the admin can download a backup');
+const counts = async () => (await one(`select (select count(*) from public.laptops) l, (select count(*) from public.sales) s,
+  (select sum(amount) from public.sale_payments) p, (select count(*) from public.service_jobs) j, (select count(*) from public.repairs) r`));
+const before = await counts();
+const backup = await rpc(U.admin, 'export_backup');
+eq(backup.format, 'fcl-v2', 'backup format fcl-v2');
+ok(await rpcErr(U.admin, 'restore_backup', { p_data: backup, p_confirm: 'yes' }), 'restore needs RESTORE typed');
+ok(await rpcErr(U.coadmin, 'restore_backup', { p_data: backup, p_confirm: 'RESTORE' }), 'co-admin cannot restore');
+await rpc(U.admin, 'restore_backup', { p_data: backup, p_confirm: 'RESTORE' });
+eq(JSON.stringify(await counts()), JSON.stringify(before), 'restore brings back the same laptops, sales, payments, service jobs and repairs');
+eq((await rpc(U.admin, 'get_laptop', { p_code: L7.code })).sale.profit, 8150, 'profit after restore is still ₹8,150');
+ok(await rpcErr(U.admin, 'import_backup', { p_data: { suppliers: [], laptops: [] } }), 'old-app import refuses a database that has data');
+// an old prototype backup
+const proto = {
+  settings: { shopName: 'First Choice Laptops', phone: '+91 99168 76350', addr: 'R.T Nagar', warranty: 6, oldDays: 60, cloud: '', preset: '' },
+  suppliers: [{ id: 'S0', code: '01', name: 'Ali Traders', phone: '' }, { id: 'SX', code: '00', name: 'Customer exchange', phone: '' }],
+  batches: [{ id: 'B0', supId: 'S0', batchNo: 1, month: 3, year: 2026, qty: 3, cost: 30000, model: 'Dell Latitude 5490 i5 8th', prefix: '01-01-03-26', date: '2026-03-05' },
+            { id: 'BX', supId: 'SX', batchNo: 1, month: 4, year: 2026, qty: 1, cost: 5000, model: 'Exchanged laptops', prefix: '00-01-04-26', date: '2026-04-02' }],
+  laptops: [
+    { code: '01-01-03-26-001', batchId: 'B0', model: 'Dell Latitude 5490 i5 8th', serial: 'ABC1', expenses: [{ date: '2026-03-10', desc: 'SSD changed', amt: 1800 }],
+      tests: { Display: 'ok', Battery: 'fail' }, sale: { date: '2026-04-02', name: 'Rahul', mobile: '9811111111', price: 20000, warranty: 6,
+      payments: [{ date: '2026-04-02', amt: 5000, method: 'Exchange', ref: '00-01-04-26-001' }, { date: '2026-04-02', amt: 10000, method: 'UPI' }] } },
+    { code: '01-01-03-26-002', batchId: 'B0', model: 'Dell Latitude 5490 i5 8th', serial: '', expenses: [],
+      reserve: { date: '2026-04-05', name: 'Sana', mobile: '9822222222', price: 18000, payments: [{ date: '2026-04-05', amt: 2000, method: 'UPI' }] } },
+    { code: '01-01-03-26-003', batchId: 'B0', model: 'Dell Latitude 5490 i5 8th', serial: '', expenses: [], sale: null,
+      returns: [{ date: '2026-04-01', name: 'Ravi', mobile: '9833333333', price: 15000, payments: [{ date: '2026-04-01', amt: 15000, method: 'Cash' }], retDate: '2026-04-03', refund: 12000, method: 'Cash' }] },
+    { code: '00-01-04-26-001', batchId: 'BX', model: 'HP 15 i3 7th', cost: 5000, note: 'exchanged by Rahul', added: '2026-04-02', expenses: [], sale: null }],
+  supPay: [{ supId: 'S0', date: '2026-03-05', amt: 20000, method: 'Bank' }, { supId: 'SX', date: '2026-04-02', amt: 5000, method: 'Exchange' }],
+  debts: [{ id: 'D1', name: 'Shop rent – March', type: 'Shop rent', amount: 18000, due: '2026-03-05', payments: [{ date: '2026-03-05', amt: 10000 }] }],
+  prices: { 'Dell Latitude 5490 i5 8th': 19000 },
+  refunds: [{ date: '2026-04-03', amt: 12000, method: 'Cash', note: 'Refund to Ravi for 01-01-03-26-003' }],
+  log: [{ t: '2026-04-02T10:00:00Z', who: 'coadmin', what: 'Sold 01-01-03-26-001 to Rahul for ₹20,000' }]
+};
+const pr = await rpc(U.admin, 'restore_backup', { p_data: proto, p_confirm: 'RESTORE' });
+ok(pr.laptops === 4 && pr.lots === 2, 'old-app backup: 2 lots and 4 laptops loaded', JSON.stringify(pr));
+const P1 = await rpc(U.admin, 'get_laptop', { p_code: '01-01-03-26-001' });
+ok(+P1.cost === 10000 && P1.sale.due === 5000 && P1.sale.payments.length === 2 && P1.brand === 'Dell' && P1.processor === 'i5' && P1.gen === 8,
+   'codes, ₹10,000 cost, payments and balance kept; specs read from the model text', JSON.stringify({ c: P1.cost, d: P1.sale.due, b: P1.brand, p: P1.processor, g: P1.gen }));
+eq(P1.sale.profit, 20000 - 10000 - 1800, 'old-app profit carries over (₹8,200)');
+eq((await lap('01-01-03-26-002')).status, 'booked', 'booking with advance kept');
+const P3 = await rpc(U.admin, 'get_laptop', { p_code: '01-01-03-26-003' });
+ok(P3.status === 'in_stock' && P3.returns.length === 1, 'returned sale kept in history, laptop in stock');
+eq(+(await rpc(U.admin, 'get_laptop', { p_code: '00-01-04-26-001' })).cost, 5000, 'exchange laptop keeps its ₹5,000 cost');
+eq((await rpc(U.admin, 'get_snapshot')).suppliers.find(s => s.code === '01').due, 10000, 'supplier balance ₹10,000 (₹30,000 − ₹20,000)');
+ok((await rpc(U.admin, 'money_day', { p_date: '2026-04-03' })).outs.some(x => +x.amt === 12000), 'old refund shows in Today\'s money for its date');
+ok((await rpc(U.admin, 'activity_page', {})).some(a => a.actor_name === 'Co-admin (old app)'), 'old activity log kept');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

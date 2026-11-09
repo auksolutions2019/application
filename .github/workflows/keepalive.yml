@@ -1,0 +1,22 @@
+# Keeps the free Supabase project awake (free projects pause after 7 days without use).
+# Once a day it calls public.ping(), the only function the public key may run. It reads no business data.
+# The Project URL and public key are read from config.js, so there is nothing to set up here.
+name: Keep Supabase awake
+on:
+  schedule:
+    - cron: '30 3 * * *'   # every day at 09:00 India time
+  workflow_dispatch: {}     # "Run workflow" button, to test it
+permissions:
+  contents: read
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ping the database
+        run: |
+          URL=$(grep -oP "SUPABASE_URL:\s*'\K[^']+" config.js || true)
+          KEY=$(grep -oP "SUPABASE_ANON_KEY:\s*'\K[^']+" config.js || true)
+          if [ -z "$URL" ] || [ -z "$KEY" ]; then echo "config.js is not filled in yet (README step 7)"; exit 1; fi
+          curl -fsS -X POST "$URL/rest/v1/rpc/ping" -H "apikey: $KEY" -H "Content-Type: application/json" -d '{}'
+          echo

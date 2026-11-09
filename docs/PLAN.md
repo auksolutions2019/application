@@ -402,3 +402,37 @@ Tests 1 to 7 will be a SQL test script that you run in the Supabase SQL editor. 
 - For the Edge Functions: either the Supabase CLI on this PC, or the dashboard's built-in function editor. I'll suggest the easier one in Phase 2.
 - Internet on this PC for downloading the local copies of the libraries and the Archivo font (Phase 3).
 - Later: a Cloudinary account and a GitHub account (taqwasteps@gmail.com) for Pages.
+
+## 8. Service partners (added 2026-11-09)
+
+- **Tables:**
+  - `service_partners`: name, mobile, shop name, address, what they repair
+  - `service_jobs`: laptop, partner, stock or warranty, what to fix, given / expected / received dates, work done, outcome
+  - `service_charges`: admin only; no row means "charge missing"
+  - `service_payments`: never edited, only reversed
+- **Laptop status** adds `at_service`. A laptop at service cannot be sold, booked, bulk sold, returned or undone ("This laptop is with … since …").
+- **Charges:**
+  - a **stock** job's charge is added to that laptop's cost (so profit is right when it sells)
+  - a **warranty** job's charge is a warranty cost: it never changes the original sale's profit and comes off net profit in the month it came back
+- **Who can do what:**
+  - staff gives and receives, never sees or enters charges
+  - co-admin may enter a missing charge (not change it), sees no totals, cannot pay
+  - admin does everything, including paying now at receive or later from the partner page or Liabilities
+- **Screens:**
+  - the laptop pop-up gets three big buttons (Replace parts, Delivery / Handover, Give for service), with Tests as a small link; Service is highlighted while at service, Delivery when sold
+  - More → Service partners, with a partner page showing laptops with them now (days out, overdue in red), history and money (admin), plus Call, WhatsApp and Pay
+  - "At service" on Home and in the Stock filter; "Owed to service partners" on Home and in Liabilities (admin)
+  - service payments in Today's money; service and warranty costs per month in Reports
+  - Activity line "Imran gave … to Ravi Chip Repair for screen"
+- **Live sync** now uses `sync_ticks`, a data-free table every role can receive, so staff phones refresh too.
+
+## 9. Build status (2026-11-09)
+
+- **Database:** `supabase/setup_all.sql` (one file, safe to run twice).
+- **Local tests:**
+  - 161 checks with the migrations; 163 when loading `setup_all.sql` twice
+  - 32 checks for the Excel import, matching the dealer's Dashboard: ₹4,97,400 (Sep ₹2,67,500, Oct ₹2,29,900), expenses ₹60,900
+  - 43 browser checks in headless Edge against a local stand-in for Supabase
+- **Edge Functions:** type-checked with Deno. Not yet run against a real Supabase project.
+- **Still to do on the real project:** setup steps 1–10 in README.md, then check by hand: login lock, Realtime between two phones, camera scanning, Cloudinary upload.
+- **Dealer to confirm before the Excel import:** Q1–Q6 answers, plus a second possible double entry found by the import ("HP pentinum 360", OLX, ₹8,500, twice on 27 Sep in lot 786).
