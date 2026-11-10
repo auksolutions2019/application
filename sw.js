@@ -1,7 +1,7 @@
 // Service worker: keeps the app's own files so it opens fast and without internet.
 // Data never goes through here (Supabase calls go straight to the network; the snapshot is cached by the app).
 // Bump VERSION whenever app files change, so phones pick up the new version.
-const VERSION = 'fcl-v4';
+const VERSION = 'fcl-v5';
 const FILES = ['./', 'index.html', 'app.js', 'config.js', 'manifest.webmanifest', 'css/app.css', 'css/fonts.css',
   'assets/logo.jpg', 'assets/logo-mark.jpg', 'assets/icon-192.png', 'assets/icon-512.png',
   'assets/fonts/archivo-latin.woff2', 'assets/fonts/archivo-latin-ext.woff2',
