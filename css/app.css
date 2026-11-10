@@ -313,11 +313,11 @@ textarea{font:inherit;width:100%;padding:12px 13px;border:1px solid var(--line);
 .pnote .link{margin-left:4px;font-size:13px}
 .lrow .cm .pnote{display:block}
 /* bill: the dealer's invoice design (A4). .inv.color = WhatsApp / download PDF, .inv.inv-bw = printed */
-.inv{--acc:#14858F;--dark:#0F1D26;--soft:#E8F4F5;--txt:#111827;--mut:#4B5563;--rule:#D3DCE0;
+.inv{--acc:#1F6BFF;--dark:#0E2147;--soft:#EEF3FF;--txt:#0E2147;--mut:#5E6E8C;--rule:#D5DDEA;
  font-family:Archivo,Arial,sans-serif;font-variation-settings:"wdth" 100;color:var(--txt);width:190mm;margin:0 auto;font-size:10pt;line-height:1.4;
  -webkit-print-color-adjust:exact;print-color-adjust:exact}
-.inv.inv-bw{--acc:#111;--dark:#000;--soft:#fff;--mut:#444;--rule:#999}
-.inv .ih{display:flex;align-items:center;gap:6mm;padding-bottom:4.5mm;border-bottom:1mm solid var(--acc)}
+.inv.inv-bw{--acc:#111;--dark:#000;--soft:#fff;--txt:#111;--mut:#444;--rule:#999}
+.inv .ih{display:flex;align-items:center;gap:6mm;padding-bottom:4.5mm;border-bottom:1mm solid var(--dark)}
 .inv .ih .logo{height:27mm;width:auto;max-width:56mm;object-fit:contain;flex:none}
 .inv.inv-bw .ih .logo{filter:grayscale(1) contrast(1.1)}
 .inv .ih .logo.sq{width:40mm;height:22mm;border-radius:1.5mm}
@@ -363,6 +363,6 @@ textarea{font:inherit;width:100%;padding:12px 13px;border:1px solid var(--line);
 .inv .sign{text-align:right;width:75mm}
 .inv .sign b{display:block;font-size:10.5pt}
 .inv .sign .sl{margin-top:17mm;border-top:.5mm solid var(--dark);padding-top:2.2mm;text-align:center;font-size:8.5pt;letter-spacing:.14em}
-.inv .thanks{border-top:.5mm solid var(--acc);margin-top:8mm;padding-top:2.5mm;text-align:center;font-size:8.5pt;color:#374151}
+.inv .thanks{border-top:.5mm solid var(--dark);margin-top:8mm;padding-top:2.5mm;text-align:center;font-size:8.5pt;color:#374151}
 .inv td,.inv th{font-variant-numeric:normal}
 .inv .iwb .wl b{color:var(--txt)}
