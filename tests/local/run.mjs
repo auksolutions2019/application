@@ -24,13 +24,16 @@ const eq = (a, b, name) => ok(String(a) === String(b), name, `(got ${JSON.string
 // ---------- setup ----------
 await db.exec(readFileSync(join(here, 'supabase_stub.sql'), 'utf8'));
 // --setup: load the single supabase/setup_all.sql (twice, to prove it is safe to re-run); otherwise each migration.
-const useSetup = process.argv.includes('--setup');
-const sources = useSetup ? ['setup_all.sql', 'setup_all.sql (second run)'] : readdirSync(migDir).filter(f => f.endsWith('.sql')).sort();
+// --parts: load setup_part1.sql then setup_part2.sql (twice), the split version of the same file.
+const useParts = process.argv.includes('--parts');
+const useSetup = useParts || process.argv.includes('--setup');
+const sources = useParts ? ['setup_part1.sql', 'setup_part2.sql', 'setup_part1.sql', 'setup_part2.sql']
+  : useSetup ? ['setup_all.sql', 'setup_all.sql (second run)'] : readdirSync(migDir).filter(f => f.endsWith('.sql')).sort();
 for (const f of sources) {
-  const file = useSetup ? join(migDir, '..', 'setup_all.sql') : join(migDir, f);
+  const file = useSetup ? join(migDir, '..', f.split(' ')[0]) : join(migDir, f);
   try {
     const res = await db.exec(readFileSync(file, 'utf8'));
-    if (useSetup) { const last = res.at(-1).rows[0]; console.log(`loaded ${f}: ${last.tables} tables, ${last.tables_with_rls_on} with RLS on`);
+    if (useSetup && !f.includes('part1')) { const last = res.at(-1).rows[0]; console.log(`loaded ${f}: ${last.tables} tables, ${last.tables_with_rls_on} with RLS on`);
       ok(last.tables === last.tables_with_rls_on && last.tables >= 30, `${f}: every table has RLS on`); }
     else console.log('migrated', f);
   } catch (e) { console.error(`${f} failed: ${e.message}`); process.exit(1); }

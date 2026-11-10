@@ -33,7 +33,9 @@ Setup takes about 30 minutes. Do the steps in this order.
 
 1. Open **SQL Editor**, then **New query**.
 2. Open `supabase/setup_all.sql` from this repo, copy **all** of it, paste it in, and click **Run**.
-3. The last result shows two numbers: `tables` and `tables_with_rls_on`. They must be the same (32 and 32). That means every table has its access rules on.
+3. The last result shows two numbers: `tables` and `tables_with_rls_on`. They must be the same (34 and 34). That means every table has its access rules on.
+
+**If the SQL Editor says the query is too big:** use the two halves instead. Paste `supabase/setup_part1.sql` into a new query and click **Run**. Then paste `supabase/setup_part2.sql` into another new query and click **Run**. Part 2 ends with the same check (34 and 34). Together they are exactly the same SQL as `setup_all.sql`.
 
 The file is safe to run again; every step checks first. Do not edit it by hand: it is built from `supabase/migrations/` with `node tools/build-setup.mjs`.
 

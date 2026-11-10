@@ -5,6 +5,7 @@
 -- Paste the whole file into the Supabase SQL Editor on a new project and click Run.
 -- It is safe to run again: every step checks first.
 -- The last result shows how many tables were made and how many have access rules on.
+-- If the SQL Editor says the query is too big, run setup_part1.sql and then setup_part2.sql instead.
 -- =====================================================================
 
 
