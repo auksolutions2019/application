@@ -4,7 +4,7 @@ import { ICON } from '../ui/icons.js';
 import { empty, confirmBox, dialog, guard, toast } from '../ui/feedback.js';
 import { S, load, isAdmin, isMgr, role } from '../api/store.js';
 import { read, write } from '../api/client.js';
-import { owned, atService, ageDays, oldDays, lapList, matches, testsPassed } from './common.js';
+import { owned, atService, ageDays, oldDays, lapList, matches, testsPassed, thumb } from './common.js';
 import { lapName } from '../ui/specs.js';
 
 export const views = {
@@ -38,7 +38,7 @@ export const views = {
     ${chargeMissing ? `<div class="card alertc"><div class="chead"><h3 style="margin:0">Service charges to fill in</h3><span class="warnmark">${chargeMissing}</span></div><p class="muted">Laptops came back from service without a charge entered.</p><button class="ghost" style="width:100%;margin-top:10px" onclick="A.go('partners')">Open service partners</button></div>` : ''}
     ${old.length ? `<div class="card alertc"><div class="chead"><h3 style="margin:0">Sitting too long</h3><span class="pill due">${old.length} laptops</span></div>
       <p class="muted">Unsold for over ${oldDays()} days. ${adm ? `About ${rs(sum(old, l => +l.full_cost || 0))} of your money is stuck in them. ` : ''}A small price cut can free it up.</p>
-      <div class="list flat" style="margin-top:10px">${old.slice(0, 3).map(l => `<div class="lrow" onclick="A.openLaptop('${esc(l.code)}')"><div class="cm">${tag(l.code)}<b style="margin-top:6px">${esc(lapName(l))}</b></div><span class="pill due">${ageDays(l)} days</span></div>`).join('')}</div>
+      <div class="list flat" style="margin-top:10px">${old.slice(0, 3).map(l => `<div class="lrow" onclick="A.openLaptop('${esc(l.code)}')">${thumb(l)}<div class="cm">${tag(l.code)}<b style="margin-top:6px">${esc(lapName(l))}</b></div><span class="pill due">${ageDays(l)} days</span></div>`).join('')}</div>
       <button class="ghost" style="width:100%;margin-top:10px" onclick="A.stockFilter('old')">See all ${old.length}</button></div>` : ''}
     ${!d.lots.some(x => x.kind !== 'exchange') && adm ? `<div class="card" style="border-color:var(--blue)"><h3>Start here</h3><p class="muted">Add your suppliers and your first lot, or bring in the Excel sheet or the old app's backup from More, Backup and import.</p><button style="margin-top:10px" onclick="A.go('backup')">Backup and import</button></div>` : ''}
     <div class="quick">${role() === 'staff'

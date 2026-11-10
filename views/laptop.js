@@ -7,7 +7,7 @@ import { S, load, laptopByCode, cachedLaptop, isAdmin, isMgr, role } from '../ap
 import { read, write, updateLaptop } from '../api/client.js';
 import { specEditor, wireSpecEditor, readSpecs, lapName, SKILLS } from '../ui/specs.js';
 import { printStickers, printBill, billText, warrantyOf } from '../ui/print.js';
-import { TESTS, LEADS, status, testBadge, testCount, testsPassed, ageDays, oldDays, atService, lotOf, noteLine } from './common.js';
+import { TESTS, LEADS, status, testBadge, testCount, testsPassed, ageDays, oldDays, atService, lotOf, noteLine, thumb } from './common.js';
 
 let cur = null, mtab = 'hand', resvSell = false, editSpecs = false, dirty = false, floorCache = new Map();
 const L = () => cachedLaptop(cur);
@@ -29,7 +29,7 @@ function render() {
   const lot = lotOf(l), w = warrantyOf(l), age = ageDays(l), svc = l.service;
   const hi = atService(l) ? 'svc' : l.sale ? 'hand' : '';
   $('sheet').innerHTML = `<div style="display:flex;justify-content:space-between;align-items:start;gap:10px">
-    <div style="min-width:0"><div style="margin-bottom:8px">${tag(l.code, 1)}</div><div class="muted">${lot ? `${lot.supplier_name ? esc(lot.supplier_name) + ', ' : ''}${MON[lot.month - 1]} ${lot.year}` : ''}${l.notes ? ', ' + esc(l.notes) : ''}</div></div>
+    <div class="lhead">${thumb(l, 'lg')}<div style="min-width:0"><div style="margin-bottom:8px">${tag(l.code, 1)}</div><div class="muted">${lot ? `${lot.supplier_name ? esc(lot.supplier_name) + ', ' : ''}${MON[lot.month - 1]} ${lot.year}` : ''}${l.notes ? ', ' + esc(l.notes) : ''}</div></div></div>
     <button class="ghost sm" onclick="A.closeModal()" aria-label="Close">${ICON.x}</button></div>
   <div class="badges">${status(l)}${testBadge(l)}${w ? w.badge : ''}${!l.sale && age >= oldDays() ? `<span class="pill due">${age} days in stock</span>` : ''}${isAdmin() && l.cost == null && l.full_cost == null ? '<span class="warnmark">Cost missing</span>' : ''}</div>
   ${svc ? `<div class="svcbox">${ICON.tool}<div><b>With ${esc(svc.partner)} since ${fmtD(svc.given_on)}</b><div class="${svc.overdue ? 'overdue' : 'muted'}">${svc.days_out} day${svc.days_out === 1 ? '' : 's'} out${svc.expected_on ? `, expected back ${fmtD(svc.expected_on)}${svc.overdue ? ' (overdue)' : ''}` : ''}${svc.kind === 'warranty' ? ', customer warranty' : ''}</div></div></div>` : ''}

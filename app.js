@@ -129,7 +129,11 @@ async function start() {
   $('who').textContent = S.d.me?.name || '';
   setOffline();
   startSync(on => $('syncdot').classList.toggle('off', !on));
-  go('home');
+  // Opened by sharing a photo into the app: read its QR on the Scan screen
+  if (new URLSearchParams(location.search).has('shared')) {
+    history.replaceState(null, '', location.pathname);
+    go('scan'); setTimeout(() => scan.actions.takeShared(), 300);
+  } else go('home');
 }
 async function logout() {
   if (!await fb.confirmBox('Log out?', 'You will need your PIN to log in again.', 'Log out')) return;

@@ -5,7 +5,7 @@ import { toast, empty, openSheet, sheetHead, closeModal, dialog, amountBox, guar
 import { S, load, isAdmin, isMgr } from '../api/store.js';
 import { read, write } from '../api/client.js';
 import { SKILLS } from '../ui/specs.js';
-import { noteLine } from './common.js';
+import { noteLine, thumb } from './common.js';
 
 let openPartnerId = null;
 
@@ -16,7 +16,7 @@ export const views = {
     const out = S.d.laptops.filter(l => l.service);
     return `<section class="hero mini"><div class="l">Laptops at service</div><div class="n" style="font-size:36px">${out.length}</div><div class="l">${out.filter(l => l.service.overdue).length ? `${out.filter(l => l.service.overdue).length} past the expected date` : 'with outside technicians and repair shops'}${adm && S.d.service_owed ? `, ${rs(S.d.service_owed)} owed` : ''}</div></section>
     ${mgr ? `<button class="addbig" onclick="A.formPartner()">${ICON.plus}Add a service partner</button>` : ''}
-    ${missing.length ? `<h3 class="sh">Charges to fill in</h3><div class="list">${missing.map(j => `<div class="lrow" style="cursor:default"><div class="cm">${tag(j.code)}<div class="muted" style="margin-top:4px">${esc(j.partner)}, back ${fmtD(j.received_on)}${j.kind === 'warranty' ? ', warranty' : ''}</div></div><button class="sm" onclick="A.fillCharge('${j.id}')">Add charge</button></div>`).join('')}</div>` : ''}
+    ${missing.length ? `<h3 class="sh">Charges to fill in</h3><div class="list">${missing.map(j => `<div class="lrow" style="cursor:default">${thumb(j.code, '', true)}<div class="cm">${tag(j.code)}<div class="muted" style="margin-top:4px">${esc(j.partner)}, back ${fmtD(j.received_on)}${j.kind === 'warranty' ? ', warranty' : ''}</div></div><button class="sm" onclick="A.fillCharge('${j.id}')">Add charge</button></div>`).join('')}</div>` : ''}
     <div class="list">${ps.length ? ps.map(p => `<div class="crow" onclick="A.openPartner('${p.id}')" style="cursor:pointer">
       <div class="av">${esc(initials(p.label))}</div>
       <div class="cm"><b>${esc(p.label)}${p.active ? '' : ' <span class="mtag">off</span>'}</b><div class="muted">${p.shop_name && p.name !== p.label ? esc(p.name) + ', ' : ''}${esc((p.skills || []).join(', ') || 'General repairs')}</div></div>
@@ -36,13 +36,13 @@ async function renderPartner() {
   <div class="row" style="margin-top:12px">${d.mobile ? `<a class="btnlink" style="background:var(--ice);color:var(--ink)" href="tel:${esc(d.mobile)}">${ICON.phone}Call</a><a class="btnlink" target="_blank" href="${esc(waLink(d.mobile, msg))}">${ICON.wa}WhatsApp</a>` : ''}
    ${adm && d.money?.owed > 0 ? `<button class="sm" onclick="A.payPartner('${d.id}')">Pay</button>` : ''}${isMgr() ? `<button class="sm ghost" onclick="A.formPartner('${d.id}')">Edit</button>` : ''}</div>
   <h3 class="sh">With them now (${d.with_them.length})</h3>
-  <div class="list flat">${d.with_them.length ? d.with_them.map(j => `<div class="lrow" onclick="A.closeModal();A.openLaptop('${esc(j.code)}')"><div class="cm">${tag(j.code)}<b style="margin-top:6px">${esc(j.shorthand || j.model || 'Laptop')}</b><div class="muted">${esc((j.issues || []).join(', ') || j.note)}${j.kind === 'warranty' ? ', warranty' : ''}</div></div>
+  <div class="list flat">${d.with_them.length ? d.with_them.map(j => `<div class="lrow" onclick="A.closeModal();A.openLaptop('${esc(j.code)}')">${thumb(j.code)}<div class="cm">${tag(j.code)}<b style="margin-top:6px">${esc(j.shorthand || j.model || 'Laptop')}</b><div class="muted">${esc((j.issues || []).join(', ') || j.note)}${j.kind === 'warranty' ? ', warranty' : ''}</div></div>
      <span class="pill ${j.overdue ? 'bad' : 'svc'}">${j.days_out} day${j.days_out === 1 ? '' : 's'}${j.overdue ? ', overdue' : ''}</span></div>`).join('') : '<p class="muted" style="padding:12px">Nothing with them right now.</p>'}</div>
   <h3 class="sh">History</h3>
   <div class="grid">${[['Sent', h.sent], ['Returned', h.returned], ['Fixed', h.fixed], ['Not fixed', h.not_fixed + h.no_work]].map(([t, v]) => `<div class="stat"><span>${t}</span><b>${v}</b></div>`).join('')}</div>
   ${adm && d.money ? `<h3 class="sh">Money</h3><div class="list flat"><div class="kv" style="padding:9px 12px"><span>Service charges</span><b>${rs(d.money.charges)}</b></div><div class="kv" style="padding:9px 12px"><span>Paid</span><b>${rs(d.money.paid)}</b></div><div class="kv" style="padding:9px 12px;border:0"><span>Still owed</span><b style="color:${d.money.owed > 0 ? 'var(--red)' : 'var(--green)'}">${rs(d.money.owed)}</b></div></div>${d.charge_missing ? `<p class="muted" style="margin-top:6px">${d.charge_missing} job${d.charge_missing > 1 ? 's' : ''} still without a charge.</p>` : ''}
   ${d.money.payments?.length ? `<h3 class="sh">Payments</h3><div class="list flat">${d.money.payments.map(p => `<div class="lrow" style="cursor:default"><span class="cm">${fmtD(p.paid_on)}<span class="mtag">${esc(p.method)}</span>${p.ref ? `<span class="muted"> ${esc(p.ref)}</span>` : ''}${noteLine(p.note, 'service_payment', p.id)}</span><b>${rs(p.amount)}</b></div>`).join('')}</div>` : ''}` : ''}
-  ${d.recent.length ? `<h3 class="sh">Recently returned</h3><div class="list flat">${d.recent.map(j => `<div class="lrow" style="cursor:default"><span class="cm">${tag(j.code)}<span class="muted" style="display:block;margin-top:4px">back ${fmtD(j.received_on)}, ${j.outcome === 'fixed' ? 'fixed' : j.outcome === 'not_fixed' ? 'not fixed' : 'no work'}${j.work_done ? ': ' + esc(j.work_done) : ''}</span></span>${adm ? (j.charge != null ? `<b>${rs(j.charge)}</b>` : '<span class="warnmark">charge missing</span>') : ''}</div>`).join('')}</div>` : ''}`,
+  ${d.recent.length ? `<h3 class="sh">Recently returned</h3><div class="list flat">${d.recent.map(j => `<div class="lrow" style="cursor:default">${thumb(j.code, '', true)}<span class="cm">${tag(j.code)}<span class="muted" style="display:block;margin-top:4px">back ${fmtD(j.received_on)}, ${j.outcome === 'fixed' ? 'fixed' : j.outcome === 'not_fixed' ? 'not fixed' : 'no work'}${j.work_done ? ': ' + esc(j.work_done) : ''}</span></span>${adm ? (j.charge != null ? `<b>${rs(j.charge)}</b>` : '<span class="warnmark">charge missing</span>') : ''}</div>`).join('')}</div>` : ''}`,
   () => { openPartnerId = null; A.refresh(); });
 }
 

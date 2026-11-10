@@ -2,7 +2,7 @@
 import { $, esc, rs, fmtD, tag, sum, chips, chipVal, val, num, initials, waLink, enc, dec, daysSince, todayIN } from '../ui/dom.js';
 import { ICON } from '../ui/icons.js';
 import { toast, empty, openSheet, sheetHead, closeModal, confirmBox, amountBox, dialog, guard } from '../ui/feedback.js';
-import { noteLine } from './common.js';
+import { noteLine, thumb } from './common.js';
 import { S, load, isAdmin } from '../api/store.js';
 import { read, write } from '../api/client.js';
 
@@ -25,7 +25,7 @@ export const views = {
       <div class="cm"><b>${esc(c.name)}${c.customer_type === 'Dealer' ? ' <span class="mtag">Dealer</span>' : ''}</b><div class="muted">${c.n} laptop${c.n > 1 ? 's' : ''}, last on ${fmtD(c.last)}</div>${c.due > 0 ? `<div class="age ${c.days > 30 ? 'bad' : ''}">Pending ${c.days} day${c.days === 1 ? '' : 's'}</div>` : ''}</div>
       <div class="cr">${c.due > 0 ? `<span class="pill due">${rs(c.due)}</span>` : '<span class="pill sold">Paid up</span>'}
        <div class="acts"><a class="ib" href="tel:${esc(c.mobile)}" aria-label="Call">${ICON.phone}</a><a class="ib wa" href="${esc(waLink(c.mobile, waMsg(c)))}" target="_blank" aria-label="WhatsApp">${ICON.wa}</a>${c.due > 0 ? `<button class="sm" onclick="A.payCustomer('${enc(c.mobile)}')">Receive</button>` : ''}</div></div>
-      <div class="codes">${(c.codes || []).map(code => `<span onclick="A.openLaptop('${esc(code)}')">${tag(code)}</span>`).join('')}${c.n > 4 ? `<span class="muted" style="align-self:center">+${c.n - 4} more</span>` : ''}</div>
+      <div class="codes">${(c.codes || []).map(code => `<span class="codet" onclick="A.openLaptop('${esc(code)}')">${thumb(code, 'sm')}${tag(code)}</span>`).join('')}${c.n > 4 ? `<span class="muted" style="align-self:center">+${c.n - 4} more</span>` : ''}</div>
      </div>`).join('') : empty(ICON.cust, custF === 'due' ? 'Nobody owes you money' : 'No customers yet', custF === 'due' ? 'Every sale is fully paid.' : 'Customers with a mobile number appear here after a sale.')}</div>`;
   },
 

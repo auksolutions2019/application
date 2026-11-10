@@ -4,7 +4,7 @@
 import { createRequire } from 'node:module';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { startDevServer, seed, USERS, PIN } from './devserver.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -187,6 +187,61 @@ const qn = await page.evaluate(() => { const b = [...document.querySelectorAll('
 await wait(300);
 const on = await page.evaluate(() => ['brand', 'processor', 'gen', 'ram_gb', 'storage_gb'].map(k => document.querySelector(`#lcr_${k} .on`)?.textContent || ''));
 ok(qn && on.join('|') === 'Dell|i5|8th|8 GB|256' && await page.$eval('#lc_model', e => e.value) === 'Latitude 5490', 'quick add fills in the specs and model', on.join('|'));
+await page.evaluate(() => A.closeModal());
+
+console.log('Scan from gallery');
+const tmpDir = join(here, 'screenshots', 'tmp'); mkdirSync(tmpDir, { recursive: true });
+// A photo like one a customer sends on WhatsApp: a QR (made with the app's own QR maker) on a beige background
+async function photoFile(text, name) {
+  const data = await page.evaluate(async t => {
+    const c = document.createElement('canvas'); c.width = 1800; c.height = 1300; const x = c.getContext('2d');
+    x.fillStyle = '#D9CFC1'; x.fillRect(0, 0, c.width, c.height);
+    if (t) {
+      const box = document.createElement('div'); document.body.appendChild(box);
+      new QRCode(box, { text: t, width: 420, height: 420, correctLevel: QRCode.CorrectLevel.M });
+      await new Promise(r => setTimeout(r, 150));
+      x.fillStyle = '#fff'; x.fillRect(640, 380, 520, 520); x.drawImage(box.querySelector('canvas'), 690, 430); box.remove();
+    }
+    return c.toDataURL('image/png');
+  }, text);
+  const f = join(tmpDir, name); writeFileSync(f, Buffer.from(data.split(',')[1], 'base64')); return f;
+}
+const sheetCode = () => page.evaluate(() => document.querySelector('#modal:not(.hidden) #sheet .tag')?.textContent || '');
+const photoMsgNow = () => page.$eval('#photomsg', e => ({ text: e.innerText, cls: e.className, shown: !e.hidden }));
+await go('scan');
+ok(await page.$eval('#photocam', e => e.getAttribute('capture')) === 'environment' && await page.$eval('#photogal', e => !e.hasAttribute('capture') && e.accept === 'image/*'),
+  'Take photo uses the camera; Choose from gallery opens photos (no capture)');
+ok(/Works with the laptop sticker QR and the warranty QR on a bill/.test(await main()), 'hint under the two photo buttons');
+await shot('07a-scan-buttons');
+const gCode = demo.l1.codes[2];
+await (await page.$('#photogal')).uploadFile(await photoFile(gCode, 'sticker.png')); await wait(1800);
+ok(/QR found/.test((await photoMsgNow()).text) && (await photoMsgNow()).cls.includes('ok'), 'sticker QR: green "QR found … opening"', JSON.stringify(await photoMsgNow()));
+ok(await sheetCode() === gCode.replace(/-/g, ''), 'sticker QR from the gallery opens that laptop', await sheetCode());
+await page.evaluate(() => A.closeModal()); await wait(300);
+const wt = await q1(`select s.warranty_token t, l.code from public.sales s join public.laptops l on l.id = s.laptop_id where s.warranty_token is not null order by s.created_at limit 1`);
+await (await page.$('#photogal')).uploadFile(await photoFile(`http://localhost:8787/w/?t=${wt.t}`, 'bill.png')); await wait(1800);
+ok(await sheetCode() === wt.code.replace(/-/g, ''), 'warranty QR from a bill opens the laptop on that bill', `${await sheetCode()} vs ${wt.code}`);
+await page.evaluate(() => A.closeModal()); await wait(300);
+await (await page.$('#photogal')).uploadFile(await photoFile('', 'noqr.png')); await wait(1500);
+const nq = await photoMsgNow();
+ok(nq.cls.includes('bad') && nq.text === 'No QR found in this photo. Try a clearer photo, or type the sticker number below.', 'no QR: red message', JSON.stringify(nq));
+await shot('07b-scan-noqr');
+
+console.log('Laptop thumbnails');
+const thumbCode = demo.l1.codes[3];
+await srv.db.query(`insert into public.photos (laptop_id, url) select id, 'https://res.cloudinary.com/demo/image/upload/v1/fcl/test-laptop.jpg' from public.laptops where code = $1`, [thumbCode]);
+await page.reload({ waitUntil: 'networkidle0' }); await wait(1500);
+await go('stock'); await page.evaluate(() => A.stockFilter('all')); await wait(600);
+const th = await page.evaluate(code => {
+  const row = [...document.querySelectorAll('#main .lrow')].find(r => r.querySelector('.tag')?.textContent === code.replace(/-/g, ''));
+  const img = row?.querySelector('img.lthumb');
+  return { src: img?.getAttribute('src') || '', lazy: img?.loading, first: row?.firstElementChild === img, none: document.querySelectorAll('#main .lrow .lthumb.none svg').length };
+}, thumbCode);
+ok(th.src === 'https://res.cloudinary.com/demo/image/upload/c_fill,w_96,h_96,q_auto,f_auto/v1/fcl/test-laptop.jpg' && th.lazy === 'lazy' && th.first, 'thumbnail: Cloudinary 96px, lazy, left of the sticker number', JSON.stringify(th));
+ok(th.none > 0, 'no photo: grey box with a laptop outline');
+await shot('07c-thumbnails');
+await page.evaluate(code => A.openLaptop(code), thumbCode); await wait(600);
+ok(/c_fill,w_120,h_120/.test(await page.$eval('#sheet img.lthumb.lg', e => e.getAttribute('src')).catch(() => '')), 'laptop pop-up shows the first photo next to the code');
 await page.evaluate(() => A.closeModal());
 
 console.log('Offline');

@@ -1,6 +1,7 @@
-// Scan: live camera (BarcodeDetector, then bundled html5-qrcode), photo of sticker (BarcodeDetector, then jsQR),
-// find by typed or pasted sticker number.
-import { $, esc, codeDigits, codeFromDigits } from '../ui/dom.js';
+// Scan: live camera (BarcodeDetector, then bundled html5-qrcode); a photo from the camera or the gallery
+// (BarcodeDetector, then jsQR), also a photo shared into the app from WhatsApp; find by typed or pasted sticker number.
+// Works with the laptop sticker QR and the warranty QR printed on a bill.
+import { $, esc, tag, codeDigits, codeFromDigits } from '../ui/dom.js';
 import { ICON } from '../ui/icons.js';
 import { toast } from '../ui/feedback.js';
 import { S, laptopByCode } from '../api/store.js';
@@ -13,6 +14,11 @@ const camIdle = on => { const c = $('camidle'); if (c) c.style.display = on ? ''
 const camOk = () => window.isSecureContext && !!navigator.mediaDevices?.getUserMedia;
 async function hasNativeQR() { try { return 'BarcodeDetector' in window && (await BarcodeDetector.getSupportedFormats()).includes('qr_code'); } catch (e) { return false; } }
 const all = () => [...S.d.laptops, ...S.extra.values()];
+// Result of reading a photo, shown under the photo buttons: green when a QR was found, red when not
+const photoMsg = (t, bad) => { const m = $('photomsg'); if (m) { m.className = 'photomsg ' + (bad ? 'bad' : 'ok'); m.innerHTML = t; m.hidden = false; } };
+const STICKER = /^\d{2}-\d{2}-\d{2}-\d{2}-\d{3}$/;
+const NO_QR = 'No QR found in this photo. Try a clearer photo, or type the sticker number below.';
+export const SHARED_PHOTO = 'shared-photo';   // cache key the service worker uses for a photo shared into the app
 
 export const views = {
   scan() {
@@ -22,11 +28,16 @@ export const views = {
     <div id="qres"></div>
     <details class="tipbox"><summary>Scan with your phone's camera instead</summary><ol><li>Open the phone camera or Google Lens and point it at the sticker.</li><li>Tap the code that appears, then tap <b>Copy</b>.</li><li>Come back here and tap <b>Paste</b>. The laptop opens straight away.</li></ol></details></div>`;
     const cam = `<div class="card"><h3>${camOk() ? 'Scan with live camera' : 'Live camera'}</h3>
-    ${camOk() ? '' : '<p class="muted" style="margin-bottom:10px">The live camera only works when the app is opened from an https link, like GitHub Pages. Until then, use <b>Find by sticker number</b>.</p>'}
+    ${camOk() ? '' : '<p class="muted" style="margin-bottom:10px">The live camera only works when the app is opened from its https link. Until then, use <b>Take photo</b>, <b>Choose from gallery</b> or <b>Find by sticker number</b>.</p>'}
     <div class="camwrap" id="camwrap"><div id="reader"></div><div class="aim"></div><div class="camidle" id="camidle"><svg class="i" viewBox="0 0 24 24" style="width:40px;height:40px"><path d="M4 8V5a1 1 0 011-1h3M16 4h3a1 1 0 011 1v3M20 16v3a1 1 0 01-1 1h-3M8 20H5a1 1 0 01-1-1v-3"/></svg><span>Tap Start camera</span></div></div>
     <p class="muted" id="scanmsg" style="margin-top:8px;text-align:center">${navigator.onLine ? 'Point the camera at the QR sticker' : 'You are offline. Scanning works for laptops already on this phone.'}</p>
     <div class="row" style="margin-top:10px"><button onclick="A.startScan()">${ICON.cam}Start camera</button><button class="ghost" onclick="A.stopScan()">Stop</button></div>
-    <label class="photobtn">${ICON.scan}Take photo of sticker<input type="file" accept="image/*" capture="environment" style="display:none" onchange="A.scanPhoto(this.files[0]);this.value=''"></label></div>`;
+    <div class="photo2">
+      <label class="pbtn navy">📷 Take photo<small>Use the camera</small><input id="photocam" type="file" accept="image/*" capture="environment" onchange="A.scanPhoto(this.files[0]);this.value=''"></label>
+      <label class="pbtn blue">🖼 Choose from gallery<small>Photo a customer sent</small><input id="photogal" type="file" accept="image/*" onchange="A.scanPhoto(this.files[0]);this.value=''"></label>
+    </div>
+    <p class="muted photohint">Works with the laptop sticker QR and the warranty QR on a bill</p>
+    <div id="photomsg" class="photomsg" hidden></div></div>`;
     return camOk() ? cam + quick : quick + cam;
   }
 };
@@ -38,7 +49,7 @@ export function after(view) {
 export const actions = {
   async startScan() {
     if (busy || stream || scanner || !$('reader')) return;
-    if (!camOk()) { camIdle(true); return scanMsg('Live camera needs the app to be opened from an <b>https</b> link (like GitHub Pages).<br>For now, use <b>Take photo of sticker</b> below.', true); }
+    if (!camOk()) { camIdle(true); return scanMsg('Live camera needs the app to be opened from its <b>https</b> link.<br>For now, use <b>Take photo</b> or <b>Choose from gallery</b> below.', true); }
     busy = true; scanMsg('Opening camera…');
     try {
       if (await hasNativeQR()) {
@@ -60,8 +71,8 @@ export const actions = {
       scanMsg(n === 'NotAllowedError' ? 'Camera permission is blocked. Tap the 🔒 icon in the address bar → Permissions → allow Camera, then try again.'
         : n === 'NotFoundError' || n === 'OverconstrainedError' ? 'No camera found on this device. Use <b>Find by sticker number</b>.'
         : n === 'NotReadableError' ? 'Camera is being used by another app. Close it and try again.'
-        : n === 'NoLib' ? 'The scanner could not load. Use <b>Take photo of sticker</b>.'
-        : 'Could not open camera. Use <b>Take photo of sticker</b> below.', true);
+        : n === 'NoLib' ? 'The scanner could not load. Use <b>Take photo</b> below.'
+        : 'Could not open camera. Use <b>Take photo</b> or <b>Choose from gallery</b> below.', true);
     } finally { busy = false; }
   },
   stopScan() {
@@ -73,36 +84,59 @@ export const actions = {
     }
     const r = $('reader'); if (r) r.innerHTML = ''; camIdle(true);
   },
-  async gotCode(txt) {
+  // txt: what the QR says. fromPhoto: the answer goes under the photo buttons instead of under the camera.
+  async gotCode(txt, fromPhoto = false) {
+    const msg = fromPhoto ? photoMsg : scanMsg;
     const wt = String(txt || '').match(/[?&]t=([0-9a-fA-F]{64})\b/);
     const raw = (txt || '').trim().toUpperCase();
     const code = /^\d{11}$/.test(raw) ? codeFromDigits(raw) : raw;
     actions.stopScan(); if (navigator.vibrate) navigator.vibrate(80);
     try {
-      if (wt) {                                   // warranty QR printed on a bill
+      if (wt) {                                   // warranty QR printed on a bill: open the laptop that bill is for
+        if (fromPhoto) msg('✓ Warranty QR found on a bill, opening the laptop…');
         const l = await read('find_by_warranty_token', { p_token: wt[1].toLowerCase() });
-        if (l) { S.extra.set(l.code, l); return A.openLaptop(l.code); }
-        return scanMsg('This warranty QR does not match any sale in this app.', true);
+        if (l) { S.extra.set(l.code, l); if (fromPhoto) msg(`✓ Warranty QR found: ${tag(l.code)} opening…`); return A.openLaptop(l.code); }
+        return msg('This warranty QR does not match any sale in this app.', true);
       }
+      if (!STICKER.test(code)) return msg('This QR is not a First Choice laptop sticker or bill. Type the sticker number below.', true);
+      if (fromPhoto) msg(`✓ QR found: ${tag(code)} opening…`);
       const l = await laptopByCode(code);
       if (l) return A.openLaptop(l.code);
-      scanMsg('QR read: <b class="mono">' + esc(code) + '</b> — no laptop has this code in this app.', true);
+      msg(`QR read: ${tag(code)} but no laptop has this code in this app.`, true);
     } catch (e) {
-      scanMsg(navigator.onLine ? esc(e.message) : 'You are offline and this laptop is not saved on this phone.', true);
+      msg(navigator.onLine ? esc(e.message) : 'You are offline and this laptop is not saved on this phone.', true);
     }
   },
+  // A photo from the camera, the gallery or shared from WhatsApp. Shrunk to at most 1400 px, then
+  // BarcodeDetector (built into Android Chrome) and, if that finds nothing, the bundled jsQR.
   async scanPhoto(f) {
-    if (!f) return; scanMsg('Reading photo…');
+    if (!f) return;
+    photoMsg('Reading the photo…');
+    let c;
     try {
       const bmp = await createImageBitmap(f);
-      if (await hasNativeQR()) { const r = await new BarcodeDetector({ formats: ['qr_code'] }).detect(bmp); if (r.length) return actions.gotCode(r[0].rawValue); }
-      if (typeof jsQR !== 'undefined') {
-        const sc = Math.min(1, 1400 / Math.max(bmp.width, bmp.height)), c = document.createElement('canvas');
-        c.width = bmp.width * sc; c.height = bmp.height * sc; const x = c.getContext('2d'); x.drawImage(bmp, 0, 0, c.width, c.height);
-        const r = jsQR(x.getImageData(0, 0, c.width, c.height).data, c.width, c.height); if (r) return actions.gotCode(r.data);
-      }
-      scanMsg('No QR found in the photo. Take it closer, in good light, with the sticker filling the photo.', true);
-    } catch (e) { scanMsg('Could not read the photo. Try again.', true); }
+      const sc = Math.min(1, 1400 / Math.max(bmp.width, bmp.height));
+      c = document.createElement('canvas'); c.width = Math.round(bmp.width * sc); c.height = Math.round(bmp.height * sc);
+      c.getContext('2d', { willReadFrequently: true }).drawImage(bmp, 0, 0, c.width, c.height);
+      bmp.close?.();
+    } catch (e) { return photoMsg('Could not open this photo. Save it as a normal photo (JPG or PNG) and try again.', true); }
+    try {
+      if (await hasNativeQR()) { const r = await new BarcodeDetector({ formats: ['qr_code'] }).detect(c); if (r.length) return actions.gotCode(r[0].rawValue, true); }
+    } catch (e) { /* fall back to jsQR */ }
+    if (typeof jsQR !== 'undefined') {
+      const img = c.getContext('2d').getImageData(0, 0, c.width, c.height);
+      const r = jsQR(img.data, c.width, c.height, { inversionAttempts: 'attemptBoth' }); if (r) return actions.gotCode(r.data, true);
+    }
+    photoMsg(NO_QR, true);
+  },
+  // A photo shared into the app (Android: Share → First Choice). The service worker keeps it in the cache.
+  async takeShared() {
+    try {
+      const cache = await caches.open('fcl-share'), key = new URL(SHARED_PHOTO, location.href).href;
+      const r = await cache.match(key); if (!r) return;
+      await cache.delete(key);
+      await actions.scanPhoto(await r.blob());
+    } catch (e) { photoMsg('Could not read the shared photo. Save it and use Choose from gallery.', true); }
   },
   async quickFind(v) {
     const d = codeDigits(v), box = $('qres'); if (!box) return;

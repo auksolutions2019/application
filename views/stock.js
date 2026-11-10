@@ -6,7 +6,7 @@ import { S, load, isAdmin, isMgr, role } from '../api/store.js';
 import { read, write } from '../api/client.js';
 import { lapName, PROCS, RAMS } from '../ui/specs.js';
 import { printStickers } from '../ui/print.js';
-import { status, lapRow, owned, atService, ageDays, oldDays, testsPassed, matches, LEADS, noteLine } from './common.js';
+import { status, lapRow, owned, atService, ageDays, oldDays, testsPassed, matches, LEADS, noteLine, thumb } from './common.js';
 
 let stockTab = 'lots', stockQ = '', stockF = 'all', openLot = null, spec = { processor: '', ram: '', storage: '' };
 const lotExtra = new Map();          // laptops of a lot that are not in the snapshot (old sold ones)
@@ -50,7 +50,7 @@ function lotDetail(b) {
     ${avail.length ? `<button class="ghost sm" onclick="document.querySelectorAll('.pick').forEach(c=>c.checked=!c.checked)">Tick all in stock</button>` : ''}</div>
   ${mgr && b.expenses?.length ? `<h3 class="sh" style="margin-top:6px">Parts and expenses for this lot</h3><div class="list flat">${b.expenses.map(e => `<div class="lrow" style="cursor:default"><span class="cm"><b>${e.count} × ${esc(e.type)}</b><span class="muted">${fmtD(e.spent_on)}${e.line_id ? ', ' + esc(grpLabel(b.lines.find(x => x.id === e.line_id) || {})) : ', all laptops'}</span>${noteLine(e.note, 'lot_expense', e.id)}</span>
      ${e.count > 1 ? `<span class="mtag">${e.units_left} of ${e.count} left</span>` : ''}<b>${rs(e.amount)}</b>${adm ? `<button class="sm ghost" onclick="A.delLotExpense('${e.id}')" aria-label="Delete">${ICON.trash}</button>` : ''}</div>`).join('')}</div>` : ''}
-  <div class="list flat" style="margin-top:10px">${ls.map(l => `<div class="lrow">${canPick(l) ? `<input type="checkbox" class="pick" value="${l.id}" aria-label="Select ${esc(l.code)}">` : '<span style="width:20px"></span>'}<span onclick="A.openLaptop('${esc(l.code)}')" style="flex:1;min-width:0">${tag(l.code)}<div class="muted" style="margin-top:4px">${esc(lapName(l))}</div></span>${status(l)}</div>`).join('')}</div>
+  <div class="list flat" style="margin-top:10px">${ls.map(l => `<div class="lrow">${canPick(l) ? `<input type="checkbox" class="pick" value="${l.id}" aria-label="Select ${esc(l.code)}">` : '<span style="width:20px"></span>'}${thumb(l, '', true)}<span onclick="A.openLaptop('${esc(l.code)}')" style="flex:1;min-width:0">${tag(l.code)}<div class="muted" style="margin-top:4px">${esc(lapName(l))}</div></span>${status(l)}</div>`).join('')}</div>
   ${avail.length ? `<h3 style="margin-top:18px">Sell ticked laptops together</h3><p class="muted">For a dealer or customer taking many laptops. The payment is shared across them, in the order ticked.</p>
   <label>Where the customer came from</label>${chips('llead', LEADS, 'Dealer')}
   ${chips('ltype', ['Retail', 'Dealer'], 'Dealer')}
