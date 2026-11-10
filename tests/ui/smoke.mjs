@@ -119,18 +119,75 @@ await page.click('button[onclick^="A.receiveService"]'); await wait(1000);
 ok((await q1(`select status from public.laptops where code = $1`, [code2])).status === 'in_stock', 'received back: In stock again');
 await page.evaluate(() => A.closeModal());
 
-console.log('Add a lot with two lines');
+console.log('Add a new lot (cart)');
 await go('stock'); await page.evaluate(() => A.stockTab('lots')); await page.evaluate(() => A.addLot()); await wait(500);
-await page.evaluate(() => { document.querySelector('#ln0_brand [data-v="HP"]').click(); document.querySelector('#ln0_processor [data-v="i5"]').click(); document.querySelector('#ln0_genc [data-v="8"]').click(); document.querySelector('#ln0_ram [data-v="8"]').click(); });
-await page.type('#ln0_model', '840 G5'); await page.type('#ln0_qty', '2'); await page.type('#ln0_cost', '30000');
-await page.evaluate(() => A.lotAddLine()); await wait(400);
-await page.evaluate(() => { document.querySelector('#ln1_mixed').click(); }); await wait(300);
-await page.type('#ln1_qty', '3');
+const sheetText = () => page.$eval('#sheet', e => e.innerText);
+const addBtn = () => page.$eval('#lc_add', e => ({ text: e.textContent, disabled: e.disabled }));
+const chip = (row, v) => page.evaluate((row, v) => [...document.querySelectorAll(`#${row} button`)].find(b => b.textContent === v).click(), row, v);
+ok((await addBtn()).disabled, 'Add stays off until brand and processor are picked');
+await chip('lcr_brand', 'Dell'); await chip('lcr_processor', 'i5');
+ok(!(await addBtn()).disabled, 'Add turns on after brand and processor');
+const y0 = await page.$eval('#sheet', e => { e.scrollTop = 120; return e.scrollTop; });
+await chip('lcr_gen', '8th'); await chip('lcr_ram_gb', '8 GB'); await chip('lcr_storage_gb', '256');
+ok(await page.$eval('#sheet', e => e.scrollTop) === y0, 'tapping chips keeps the scroll position');
+await page.type('#lc_model', 'Latitude 5490');
+await page.click('.stepper button[aria-label="One more"]'); await page.click('.stepper button[aria-label="One more"]');
+await page.type('#lc_cost', '9000');
+ok((await addBtn()).text === '+ Add 3 × Dell i5 8th 8/256 to lot', 'Add button says what will be added', (await addBtn()).text);
+ok(await page.$eval('#lc_each', e => e.textContent) === '₹3,000 each', 'shows the cost each in green');
+await page.$eval('.lotcard', e => e.scrollIntoView()); await shot('06a-add-card');
+await page.$eval('#lc_add', b => b.click()); await wait(300);
+ok(await page.$$eval('.grp', g => g.length) === 1 && !(await page.$('.lotcard')), 'group goes into the list and the card closes');
+ok(/3×[\s\S]*Dell i5 8th 8\/256[\s\S]*Latitude 5490 · ₹9,000 \(₹3,000 each\)/.test(await sheetText()), 'list row: 3×, shorthand, model and cost');
+
+await page.click('button.addmore'); await wait(300);
+ok(await page.$eval('#lcr_brand .on', e => e.textContent).catch(() => '') === 'Dell', 'card opens again and keeps the brand');
+await page.evaluate(() => A.lcMode('mixed')); await wait(200);
+await page.click('.stepper button[aria-label="One more"]');
+await chip('lcr_mbrands', 'HP'); await chip('lcr_mbrands', 'Lenovo');
+await page.$eval('.lotcard', e => e.scrollIntoView()); await shot('06b-add-mixed');
+ok((await addBtn()).text === '+ Add 2 mixed laptops to lot', 'mixed: button says "+ Add 2 mixed laptops to lot"');
+await page.$eval('#lc_add', b => b.click()); await wait(300);
+
+// a third group, to delete
+await page.click('button.addmore'); await wait(200);
+await page.evaluate(() => A.lcMode('known')); await wait(200);
+await chip('lcr_brand', 'HP'); await chip('lcr_processor', 'i3'); await chip('lcr_storage', 'HDD');
+await page.$eval('#lc_add', b => b.click()); await wait(300);
+ok(await page.$$eval('.grp', g => g.length) === 3, 'three groups in the list');
+await page.evaluate(() => document.querySelectorAll('.grp')[2].querySelector('button[aria-label="Remove"]').click()); await wait(300);
+ok(await page.$$eval('.grp', g => g.length) === 2 && !/HP i3/.test(await sheetText()), 'delete removes a group');
+
+// edit the Dell group: cost 9,000 -> 10,500
+await page.evaluate(() => A.lcEdit(0)); await wait(300);
+ok(await page.$eval('#lc_cost', e => e.value) === '9000' && await page.$eval('#lc_model', e => e.value) === 'Latitude 5490', 'edit fills the card with the group');
+await page.$eval('#lc_cost', e => { e.value = ''; }); await page.type('#lc_cost', '10500');
+ok((await addBtn()).text === 'Save 3 × Dell i5 8th 8/256', 'edit button says Save', (await addBtn()).text);
+await page.$eval('#lc_add', b => b.click()); await wait(300);
+const txt = await sheetText();
+ok(/₹10,500 \(₹3,500 each\)/.test(txt) && await page.$$eval('.grp', g => g.length) === 2, 'edit saves the new cost');
+ok(/5 laptops/.test(txt) && await page.$eval('.lotsum', e => [...e.querySelectorAll('.tag')].map(t => t.lastElementChild.textContent).join(' to ')) === '001 to 005', 'summary: 5 laptops, stickers 001 to 005');
+ok(/2 mixed laptops have no cost yet/.test(txt), 'summary: mixed laptops without cost');
+ok(await page.$eval('#lotcreate', e => e.textContent) === 'Create lot and print 5 stickers', 'create button: "Create lot and print 5 stickers"');
+ok(!/\bline\b/i.test(txt), 'the word "line" is not shown');
 await shot('06-add-lot');
-await page.evaluate(() => { A.createLot(); }); await wait(1500);
+await page.click('#lotcreate'); await wait(1500);
 await page.evaluate(() => document.getElementById('dlgno')?.click()); await wait(300);
-const nl = await q1(`select count(*) n, count(*) filter (where shorthand = 'HP i5 8th 8/N') hp from public.laptops l join public.lots lo on lo.id = l.lot_id where lo.lot_no = 2 and lo.supplier_id = (select id from public.suppliers where code = '01')`);
-ok(+nl.n === 5 && +nl.hp === 2, 'lot created: 5 laptops, 2 of them "HP i5 8th 8/N"', JSON.stringify(nl));
+const lotQ = `from public.laptops l join public.lots lo on lo.id = l.lot_id left join public.laptop_costs c on c.laptop_id = l.id
+  where lo.lot_no = 2 and lo.supplier_id = (select id from public.suppliers where code = '01')`;
+const nl = await q1(`select count(*) n, count(*) filter (where l.shorthand = 'Dell i5 8th 8/256' and l.model = 'Latitude 5490' and c.cost = 3500) dell,
+  count(*) filter (where l.brand is null and c.cost is null) mixed, max(lo.note) note ${lotQ}`);
+ok(+nl.n === 5 && +nl.dell === 3 && +nl.mixed === 2, 'lot created: 5 stickers, 3 Dell at ₹3,500 each, 2 mixed with no cost', JSON.stringify(nl));
+ok(nl.note === 'Mixed: HP, Lenovo', 'mixed brands go into the lot note', nl.note);
+ok(/Laptops in this lot/.test(await main()) && !/\bLine \d/.test(await main()), 'lot detail: "Laptops in this lot"');
+
+console.log('Quick add');
+await page.evaluate(() => A.addLot()); await wait(500);
+const qn = await page.evaluate(() => { const b = [...document.querySelectorAll('.lquick button')].find(x => x.textContent === 'Dell i5 8th 8/256'); if (b) b.click(); return !!b; });
+await wait(300);
+const on = await page.evaluate(() => ['brand', 'processor', 'gen', 'ram_gb', 'storage_gb'].map(k => document.querySelector(`#lcr_${k} .on`)?.textContent || ''));
+ok(qn && on.join('|') === 'Dell|i5|8th|8 GB|256' && await page.$eval('#lc_model', e => e.value) === 'Latitude 5490', 'quick add fills in the specs and model', on.join('|'));
+await page.evaluate(() => A.closeModal());
 
 console.log('Offline');
 await page.setOfflineMode(true); await page.evaluate(() => dispatchEvent(new Event('offline'))); await wait(300);

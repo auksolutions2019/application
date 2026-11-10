@@ -366,3 +366,39 @@ textarea{font:inherit;width:100%;padding:12px 13px;border:1px solid var(--line);
 .inv .thanks{border-top:.5mm solid var(--acc);margin-top:8mm;padding-top:2.5mm;text-align:center;font-size:8.5pt;color:#374151}
 .inv td,.inv th{font-variant-numeric:normal}
 .inv .iwb .wl b{color:var(--txt)}
+
+/* Add a new lot: cart of laptop groups */
+.stepno{display:inline-grid;place-items:center;width:24px;height:24px;border-radius:50%;background:var(--blue);color:#fff;font-size:12.5px;font-weight:750;font-style:normal;margin-right:8px;vertical-align:-2px}
+.lotcard{border:1px solid #BCD0F2;background:#F5F8FE;border-radius:18px;padding:14px;margin-top:16px;scroll-margin-top:10px}
+.lotcard.editing{border-color:var(--blue);box-shadow:0 0 0 2px rgba(31,107,255,.15)}
+.lch{display:flex;align-items:center;justify-content:space-between;gap:10px;font-weight:750;font-size:16.5px}
+.lottabs{margin:4px 0 6px}.lottabs button{min-height:42px}.lottabs button.on{background:var(--blue)}
+.lcrow{margin-top:12px}.lcrow>span{display:block;font-size:13px;font-weight:650;color:var(--ink2)}
+.lcrow .chips{margin:6px 0 0;gap:8px}
+.lotcard .chips button,.lquick .chips button{min-height:40px;min-width:44px;padding:8px 14px;font-size:14px}
+.lotcard .chips button.plus{min-width:40px;padding:8px 0;width:40px;font-weight:700}
+.lcrow .chipset{display:contents}.lcrow i.gap{width:12px;flex:none}
+.lcrow input.sm{padding:9px 11px;font-size:14px;margin-top:8px}
+.mixhelp{margin-top:8px}.mixhelp b{font-size:15px}.mixhelp p{font-size:13px;margin-top:2px}
+.qc{align-items:flex-end}
+.stepper{display:flex;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#fff}
+.stepper button{background:var(--ice);color:var(--blue2);border-radius:0;width:48px;min-height:48px;padding:0;font-size:22px;flex:none}
+.stepper input{border:0;border-radius:0;text-align:center;font-weight:750;font-size:18px;padding:10px 0;min-width:0;-moz-appearance:textfield}
+.stepper input::-webkit-outer-spin-button,.stepper input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+.okhint{color:var(--green);font-size:13px;font-weight:650;margin-top:6px;min-height:19px}
+button.addgrp{width:100%;margin-top:10px;padding:14px;min-height:50px;font-size:15.5px}
+button.addgrp:disabled{background:#B9C8E2;cursor:default}
+.lquick{margin-top:18px}.lquick h3{font-size:15.5px}.lquick .chips{margin:8px 0 6px}.lquick p{font-size:13px}
+.lothead{display:flex;justify-content:space-between;align-items:center;margin-top:20px;font-weight:750;font-size:16.5px;scroll-margin-top:10px}
+.lothead .muted{font-weight:500;font-size:13.5px}
+.grp{display:flex;align-items:center;gap:12px;border:1px solid var(--line);border-radius:16px;padding:12px;margin-top:10px;background:#fff}
+.grp.ed{border-color:var(--blue);box-shadow:0 0 0 2px rgba(31,107,255,.15)}
+.grp .qx{width:46px;height:46px;border-radius:12px;background:var(--ink);color:#fff;display:grid;place-items:center;font-weight:750;font-size:15px;flex:none}
+.grp .gt{flex:1;min-width:0}.grp .gt b{display:block;font-size:15.5px}.grp .gt span{color:var(--mut);font-size:13px}
+.grp .nocost{color:var(--red);font-weight:650}
+.grp button.ib2{width:40px;height:40px;padding:0;background:var(--ice);color:var(--ink2);flex:none;font-size:16px}
+.grp button.ib2 svg{width:18px;height:18px}
+button.addmore{width:100%;margin-top:12px;min-height:48px}
+.lotsum .sumrow{display:flex;justify-content:space-between;font-size:16px;margin-top:2px}
+button.createlot{width:100%;margin-top:16px;padding:15px;min-height:52px;background:var(--ink);font-size:16px}
+button.createlot:disabled{background:#B9C3D4;cursor:default}

@@ -8,6 +8,7 @@ import { login, logout as doLogout, hasSession, lastMobile, forgetMobile } from 
 import { S, load, onChange, startSync, stopSync, role } from './api/store.js';
 import * as home from './views/home.js';
 import * as stock from './views/stock.js';
+import * as addlot from './views/addlot.js';
 import * as scan from './views/scan.js';
 import * as laptop from './views/laptop.js';
 import * as people from './views/people.js';
@@ -17,7 +18,7 @@ import * as reports from './views/reports.js';
 import * as backup from './views/backup.js';
 
 const { $, esc } = dom;
-const mods = [home, stock, scan, laptop, people, service, more, reports, backup];
+const mods = [home, stock, addlot, scan, laptop, people, service, more, reports, backup];
 const VIEWS = Object.assign({}, ...mods.map(m => m.views || {}));
 
 const TITLES = { home: 'Home', scan: 'Scan sticker', stock: 'Stock', sales: 'Customers', more: 'More', suppliers: 'Suppliers',
