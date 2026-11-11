@@ -244,6 +244,82 @@ await page.evaluate(code => A.openLaptop(code), thumbCode); await wait(600);
 ok(/c_fill,w_120,h_120/.test(await page.$eval('#sheet img.lthumb.lg', e => e.getAttribute('src')).catch(() => '')), 'laptop pop-up shows the first photo next to the code');
 await page.evaluate(() => A.closeModal());
 
+console.log('Delete, Recently deleted and Restore');
+const dlgText = () => page.evaluate(() => document.querySelector('#dlg:not(.hidden) .dbox')?.innerText || '');
+const menuItems = scope => page.evaluate(s => { const r = document.querySelector(s); r?.querySelector('.kbtn')?.click();
+  return [...(r?.querySelectorAll('.kmenu button') || [])].map(b => (b.classList.contains('kred') ? 'red:' : '') + b.textContent); }, scope);
+const pickMenu = (scope, label) => page.evaluate((s, t) => { const b = [...document.querySelectorAll(s + ' .kmenu button')].find(x => x.textContent === t); b?.click(); return !!b; }, scope, label);
+const cartLot = await q1(`select lo.id, lo.prefix from public.lots lo join public.suppliers s on s.id = lo.supplier_id where s.code = '01' and lo.lot_no = 2`);
+const dells = (await srv.db.query(`select id, code from public.laptops where lot_id = $1 and brand = 'Dell' order by piece_no`, [cartLot.id])).rows;
+const costIs = async id => +(await q1(`select cost from public.laptop_costs where laptop_id = $1`, [id])).cost;
+// laptop: the ⋮ menu, keep the lot cost
+await page.evaluate(c => A.openLaptop(c), dells[0].code); await wait(600);
+const lm = await menuItems('#sheet');
+ok(lm.join('|') === 'Edit specs|Reprint sticker|red:Delete laptop', 'laptop ⋮ menu: Edit specs, Reprint sticker, Delete (in red)', lm.join('|'));
+await pickMenu('#sheet', 'Delete laptop'); await wait(600);
+ok(/Delete laptop/.test(await dlgText()) && /Reduce the lot cost by ₹3,500/.test(await dlgText()) && /Keep the lot cost/.test(await dlgText()), 'delete asks: reduce the lot cost by ₹3,500, or keep it');
+await page.evaluate(() => document.querySelector('#dlcost [data-v="keep"]').click());
+await shot('08a-delete-laptop');
+await page.click('#dlgok'); await wait(1500);
+ok((await q1(`select deleted_at from public.laptops where id = $1`, [dells[0].id])).deleted_at && await costIs(dells[1].id) === 5250 && await costIs(dells[2].id) === 5250,
+   'laptop deleted; its ₹3,500 shared over the other 2 (₹5,250 each)');
+ok(!(await page.evaluate(c => !!A.S?.byCode?.get?.(c), dells[0].code)) && /deleted/.test(await toastText()), 'it disappears from the app');
+// laptop with a sale: refused with the reason
+await page.evaluate(c => A.openLaptop(c), demo.l1.codes[0]); await wait(600);
+await page.evaluate(() => { A.delLaptop(); }); await wait(700);
+ok(/cannot be deleted/.test(await dlgText()) && /has a sale\. Use Undo sale or Return instead\./.test(await dlgText()), 'sold laptop: "This laptop has a sale. Use Undo sale or Return instead."');
+await page.click('#dlgok'); await wait(200); await page.evaluate(() => A.closeModal());
+// Recently deleted: restore
+await go('deleted');
+ok(new RegExp(dells[0].code).test(await main()) && /Deleted by Ayan/.test(await main()) && /30 days left/.test(await main()), 'Recently deleted lists the laptop, who and days left');
+await shot('08b-recently-deleted');
+await page.evaluate(code => [...document.querySelectorAll('#main .crow')].find(r => r.innerText.includes(code)).querySelector('button').click(), dells[0].code); await wait(1500);
+ok(!(await q1(`select deleted_at from public.laptops where id = $1`, [dells[0].id])).deleted_at && await costIs(dells[1].id) === 3500 && await costIs(dells[0].id) === 3500, 'Restore brings it back with the costs as before');
+// lot: blocked, then deleted by typing the code, then restored
+const l1Id = (await q1(`select lot_id from public.laptops where code = $1`, [demo.l1.codes[0]])).lot_id;
+await go('stock'); await page.evaluate(() => A.stockTab('lots')); await wait(300);
+await page.evaluate(id => A.toggleLot(id), l1Id); await wait(800);
+const lotMenu = await menuItems('#bdetail');
+ok(lotMenu.includes('red:Delete lot') && lotMenu.includes('Print all stickers'), 'lot ⋮ menu has Delete lot (red)', lotMenu.join('|'));
+await pickMenu('#bdetail', 'Delete lot'); await wait(800);
+ok(/cannot be deleted/.test(await dlgText()) && await page.$$eval('#dlg .blk .lrow', r => r.length) >= 3, 'lot with sold, booked and serviced laptops: refused, listing them');
+await page.click('#dlgok'); await wait(200);
+await page.evaluate(id => A.toggleLot(id), l1Id); await wait(300);
+await page.evaluate(id => A.toggleLot(id), cartLot.id); await wait(800);
+await menuItems('#bdetail'); await pickMenu('#bdetail', 'Delete lot'); await wait(800);
+ok(new RegExp(`Type ${cartLot.prefix} to confirm`).test(await dlgText()), 'lot delete asks to type the lot code');
+await page.type('#dlgv', '01-02'); await page.click('#dlgok'); await wait(600);
+ok(!(await q1(`select deleted_at from public.lots where id = $1`, [cartLot.id])).deleted_at, 'a wrong code does not delete the lot');
+await menuItems('#bdetail'); await pickMenu('#bdetail', 'Delete lot'); await wait(800);
+await page.type('#dlgv', cartLot.prefix); await page.click('#dlgok'); await wait(1500);
+const lotGone = await q1(`select lo.deleted_at, (select count(*) from public.laptops where lot_id = lo.id and deleted_at is not null) n from public.lots lo where lo.id = $1`, [cartLot.id]);
+ok(lotGone.deleted_at && +lotGone.n === 5 && !new RegExp(cartLot.prefix.split('-').join('')).test(await page.$eval('#main', e => e.innerText.replace(/\s/g, ''))), 'lot deleted with its 5 laptops, gone from Stock');
+await go('deleted');
+await page.evaluate(p => [...document.querySelectorAll('#main .crow')].find(r => r.innerText.includes('Lot ' + p)).querySelector('button').click(), cartLot.prefix); await wait(1500);
+ok(!(await q1(`select deleted_at from public.lots where id = $1`, [cartLot.id])).deleted_at, 'Restore brings the lot back');
+// photos: Edit photos ✕ (photo-delete removes it from the app and Cloudinary)
+await page.evaluate(c => A.openLaptop(c), thumbCode); await wait(700);
+await page.evaluate(() => [...document.querySelectorAll('#sheet .phhead a')].find(a => a.textContent === 'Edit photos').click()); await wait(300);
+ok(await page.$$eval('#sheet .photos .phx', b => b.length) === 1, 'Edit photos shows a ✕ on each photo');
+await page.click('#sheet .photos .phx'); await wait(400);
+ok(/Delete this photo\?/.test(await dlgText()), 'asks "Delete this photo?"');
+await page.click('#dlgok'); await wait(1500);
+const phd = await q1(`select p.deleted_at, d.cloud_status from public.photos p join private.deletions d on d.item_id = p.id where p.laptop_id = (select id from public.laptops where code = $1)`, [thumbCode]);
+ok(phd?.deleted_at && phd.cloud_status === 'deleted', 'photo deleted from the app and Cloudinary', JSON.stringify(phd));
+// photo-delete not deployed yet: still removed from the app
+await srv.db.query(`insert into public.photos (laptop_id, url) select id, 'https://res.cloudinary.com/demo/image/upload/v1/fcl/second.jpg' from public.laptops where code = $1`, [thumbCode]);
+srv.setPhotoDelete('missing');
+await page.reload({ waitUntil: 'networkidle0' }); await wait(1500);
+await page.evaluate(c => A.openLaptop(c), thumbCode); await wait(700);
+await page.evaluate(() => A.viewPhoto(0)); await wait(300);
+ok(await page.$eval('#phview img', e => e.getAttribute('src')) === 'https://res.cloudinary.com/demo/image/upload/v1/fcl/second.jpg', 'a tap opens the photo full size');
+await page.evaluate(() => [...document.querySelectorAll('#phview button')].find(b => /Delete/.test(b.textContent)).click()); await wait(400);
+await page.click('#dlgok'); await wait(1500);
+ok(+(await q1(`select count(*) n from public.photos where url like '%second.jpg' and deleted_at is not null`)).n === 1 && /stays until photo-delete is set up/.test(await toastText()),
+   'photo-delete not set up: the photo still leaves the app', await toastText() + ' / ' + JSON.stringify(await q1("select count(*) n, max(deleted_at::text) d from public.photos where url like '%second.jpg'")));
+srv.setPhotoDelete('ok');
+await page.evaluate(() => A.closeModal());
+
 console.log('Offline');
 await page.setOfflineMode(true); await page.evaluate(() => dispatchEvent(new Event('offline'))); await wait(300);
 ok(await page.$eval('#offline', e => !e.classList.contains('hidden')), 'offline banner shows');

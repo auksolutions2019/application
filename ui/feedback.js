@@ -18,7 +18,7 @@ export function toast(msg, kind = 'err') {
 let lastMethod = 'Cash';
 // Small centred dialog. Resolves true/false; for amount dialogs {amount, method, ref} or null; for text dialogs the text or null.
 export function dialog({ title, body = '', ok = 'OK', danger = false, amount = false, max = null, text = false,
-                         allowZero = false, method = true, ref = true, note = true, placeholder = '', value = '' }) {
+                         allowZero = false, method = true, ref = true, note = true, placeholder = '', value = '', html = '' }) {
   return new Promise(res => {
     const d = $('dlg');
     d.innerHTML = `<div class="dbox"><h3>${title}</h3>${body ? `<p class="muted" style="margin-bottom:6px">${body}</p>` : ''}
@@ -27,6 +27,7 @@ export function dialog({ title, body = '', ok = 'OK', danger = false, amount = f
       ${method ? chips('dlgm', METHODS, lastMethod) : ''}
       ${method && ref ? `<input id="dlgref" placeholder="Ref / UTR (optional)" autocomplete="off" style="margin-top:4px">` : ''}
       ${note ? `<input id="dlgnote" placeholder="Note (optional)" maxlength="300" autocomplete="off" style="margin-top:6px">` : ''}` : ''}
+    ${html}
     ${text ? `<input id="dlgv" style="margin-top:8px" autocomplete="off" maxlength="300" placeholder="${esc(placeholder)}" value="${esc(value)}">` : ''}
     <div class="row" style="margin-top:16px"><button class="ghost" id="dlgno">Cancel</button><button id="dlgok" class="${danger ? 'red' : ''}">${ok}</button></div></div>`;
     d.classList.remove('hidden');
@@ -71,3 +72,17 @@ export async function guard(fn) {
   catch (e) { toast(e.message || 'Something went wrong'); }
   finally { busy = false; }
 }
+
+// ⋮ menu: delete and other rare actions live here, never as a big main button.
+// items: [label, onclick code, red?]; empty or falsy items are skipped.
+let kebabSeq = 0;
+export function kebab(items, label = 'More actions') {
+  const list = items.filter(Boolean);
+  if (!list.length) return '';
+  const id = 'km' + (++kebabSeq);
+  return `<div class="kebab"><button type="button" class="ghost sm kbtn" aria-label="${label}" aria-haspopup="true" onclick="event.stopPropagation();A.kebabToggle('${id}')">⋮</button>
+  <div class="kmenu hidden" id="${id}" role="menu">${list.map(([t, act, red]) => `<button type="button" role="menuitem" class="${red ? 'kred' : ''}" onclick="event.stopPropagation();A.kebabClose();${act}">${t}</button>`).join('')}</div></div>`;
+}
+export function kebabClose() { document.querySelectorAll('.kmenu:not(.hidden)').forEach(m => m.classList.add('hidden')); }
+export function kebabToggle(id) { const m = $(id), open = m && m.classList.contains('hidden'); kebabClose(); if (open) m.classList.remove('hidden'); }
+document.addEventListener('click', e => { if (!e.target.closest?.('.kebab')) kebabClose(); });

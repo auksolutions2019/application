@@ -21,7 +21,7 @@ export class AppError extends Error {
 }
 
 // RPCs that accept a client_ref, so a double tap or retry is never saved twice.
-const WITH_REF = new Set(['create_lot', 'add_lot_expense', 'add_repair', 'sell_laptop', 'complete_booking', 'sell_laptops_bulk',
+const WITH_REF = new Set(['create_lot', 'delete_laptop', 'delete_lot', 'add_lot_expense', 'add_repair', 'sell_laptop', 'complete_booking', 'sell_laptops_bulk',
   'add_sale_payment', 'receive_customer_payment', 'book_laptop', 'cancel_booking', 'settle_held_advance', 'return_sale',
   'undo_sale', 'pay_supplier', 'pay_debt', 'add_shop_expense', 'give_for_service', 'receive_from_service', 'pay_service_partner']);
 

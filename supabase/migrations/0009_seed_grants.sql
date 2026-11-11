@@ -11,6 +11,9 @@ revoke execute on function public.bootstrap_first_admin(uuid, text, text) from a
 -- The public warranty check is run only by the warranty-check Edge Function (service key), never by the app.
 revoke execute on function public.warranty_lookup(text, text) from authenticated;
 grant execute on function public.warranty_lookup(text, text) to service_role;
+-- The photo-delete Edge Function reports what Cloudinary said (service key only).
+revoke execute on function public.photo_cloud_result(uuid, text, text) from authenticated;
+grant execute on function public.photo_cloud_result(uuid, text, text) to service_role;
 -- The daily keep-alive call is the only thing the public key may run.
 grant execute on function public.ping() to anon;
 alter default privileges in schema public revoke execute on functions from public, anon;

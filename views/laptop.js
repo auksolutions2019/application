@@ -2,14 +2,14 @@
 // specs, photos, sale, booking, exchange, payments, bill, return / undo, service.
 import { $, esc, rs, fmtD, tag, MON, sum, chips, chipVal, multiChips, multiVals, val, num, todayIN, initials, waLink, daysSince } from '../ui/dom.js';
 import { ICON } from '../ui/icons.js';
-import { toast, openSheet, closeModal, confirmBox, dialog, amountBox, guard, METHODS, sheetOpen } from '../ui/feedback.js';
+import { toast, openSheet, closeModal, confirmBox, dialog, amountBox, guard, METHODS, sheetOpen, kebab } from '../ui/feedback.js';
 import { S, load, laptopByCode, cachedLaptop, isAdmin, isMgr, role } from '../api/store.js';
-import { read, write, updateLaptop } from '../api/client.js';
+import { read, write, updateLaptop, fn } from '../api/client.js';
 import { specEditor, wireSpecEditor, readSpecs, lapName, SKILLS } from '../ui/specs.js';
 import { printStickers, printBill, billText, warrantyOf } from '../ui/print.js';
 import { TESTS, LEADS, status, testBadge, testCount, testsPassed, ageDays, oldDays, atService, lotOf, noteLine, thumb } from './common.js';
 
-let cur = null, mtab = 'hand', resvSell = false, editSpecs = false, dirty = false, floorCache = new Map();
+let cur = null, mtab = 'hand', resvSell = false, editSpecs = false, dirty = false, floorCache = new Map(), photoEdit = false;
 const L = () => cachedLaptop(cur);
 // The laptops on the same bill: this one, or every laptop of its bulk sale
 function billLaptops(l) {
@@ -30,7 +30,8 @@ function render() {
   const hi = atService(l) ? 'svc' : l.sale ? 'hand' : '';
   $('sheet').innerHTML = `<div style="display:flex;justify-content:space-between;align-items:start;gap:10px">
     <div class="lhead">${thumb(l, 'lg')}<div style="min-width:0"><div style="margin-bottom:8px">${tag(l.code, 1)}</div><div class="muted">${lot ? `${lot.supplier_name ? esc(lot.supplier_name) + ', ' : ''}${MON[lot.month - 1]} ${lot.year}` : ''}${l.notes ? ', ' + esc(l.notes) : ''}</div></div></div>
-    <button class="ghost sm" onclick="A.closeModal()" aria-label="Close">${ICON.x}</button></div>
+    <div class="hbtns">${kebab([['Edit specs', 'A.editSpecs(true)'], ['Reprint sticker', `A.printStickers(['${esc(l.code)}'])`],
+      isAdmin() ? ['Delete laptop', 'A.delLaptop()', true] : null], 'Laptop actions')}<button class="ghost sm" onclick="A.closeModal()" aria-label="Close">${ICON.x}</button></div></div>
   <div class="badges">${status(l)}${testBadge(l)}${w ? w.badge : ''}${!l.sale && age >= oldDays() ? `<span class="pill due">${age} days in stock</span>` : ''}${isAdmin() && l.cost == null && l.full_cost == null ? '<span class="warnmark">Cost missing</span>' : ''}</div>
   ${svc ? `<div class="svcbox">${ICON.tool}<div><b>With ${esc(svc.partner)} since ${fmtD(svc.given_on)}</b><div class="${svc.overdue ? 'overdue' : 'muted'}">${svc.days_out} day${svc.days_out === 1 ? '' : 's'} out${svc.expected_on ? `, expected back ${fmtD(svc.expected_on)}${svc.overdue ? ' (overdue)' : ''}` : ''}${svc.kind === 'warranty' ? ', customer warranty' : ''}</div></div></div>` : ''}
   ${w ? `<div class="wbox ${w.ok ? '' : 'off'}">${ICON.shield}<div><b>${w.ok ? 'Under warranty' : 'Warranty ended'}</b><div class="muted">${w.end ? `Laptop ${w.months} months, till ${fmtD(w.end)}. ` : ''}${w.aend ? `Charger and battery till ${fmtD(w.aend)}. ` : ''}Service support till ${fmtD(w.svc)}.</div></div></div>` : ''}
@@ -159,7 +160,8 @@ function svcPane(l) {
 function photoStrip(l) {
   const ps = l.photos || [];
   const thumb = u => u.replace('/upload/', '/upload/c_fill,w_220,h_220,q_auto,f_auto/');
-  return `<div class="photos">${ps.map((u, i) => `<a href="${esc(u)}" target="_blank" rel="noopener"><img src="${esc(thumb(u))}" alt="Photo ${i + 1} of ${esc(l.code)}" loading="lazy"></a>`).join('')}
+  const canDel = isMgr() && ps.length;
+  return `${canDel ? `<div class="phhead"><a class="link" onclick="A.photoEdit()">${photoEdit ? 'Done' : 'Edit photos'}</a></div>` : ''}<div class="photos${photoEdit && canDel ? ' editing' : ''}">${ps.map((u, i) => `<a class="ph" onclick="A.viewPhoto(${i})"><img src="${esc(thumb(u))}" alt="Photo ${i + 1} of ${esc(l.code)}" loading="lazy">${photoEdit && canDel ? `<button class="phx" onclick="event.stopPropagation();A.delPhoto(${i})" aria-label="Delete photo ${i + 1}">✕</button>` : ''}</a>`).join('')}
   <label class="addph">${ICON.cam}<span>${ps.length ? 'Add' : 'Add photos'}</span><input type="file" accept="image/*" multiple style="display:none" onchange="A.addPhotos(this.files);this.value=''"></label></div>`;
 }
 function shrink(file, max = 1600, q = 0.8) {
@@ -182,7 +184,7 @@ export const actions = {
     let l;
     try { l = await laptopByCode(code); } catch (e) { return toast(navigator.onLine ? e.message : 'You are offline and this laptop is not saved on this phone.'); }
     if (!l) return toast('No laptop has the code ' + code);
-    A.stopScan(); cur = l.code; resvSell = false; editSpecs = false; mtab = pickTab(l);
+    A.stopScan(); cur = l.code; resvSell = false; editSpecs = false; photoEdit = false; mtab = pickTab(l);
     openModalWith();
   },
   rerender(force) { if (cur && sheetOpen() && (force || !dirty)) { if (!L()) return; render(); } },
@@ -330,6 +332,63 @@ export const actions = {
       } catch (e) { toast('Upload failed: ' + (e.message || 'check internet and Cloudinary settings')); break; }
     }
     if (n) await after(`${n} photo${n > 1 ? 's' : ''} saved`);
+  },
+  // ----- photos: view full size, delete (admin and co-admin) -----
+  photoEdit() { photoEdit = !photoEdit; render(); },
+  viewPhoto(i) {
+    const l = L(), u = l?.photos?.[i]; if (!u) return;
+    document.getElementById('phview')?.remove();
+    const v = document.createElement('div'); v.id = 'phview'; v.className = 'phview';
+    v.innerHTML = `<div class="phbar"><span>Photo ${i + 1} of ${l.photos.length}</span>
+      ${isMgr() ? `<button class="ghost sm red-t" onclick="A.delPhoto(${i})" aria-label="Delete this photo">🗑 Delete</button>` : ''}
+      <button class="ghost sm" onclick="document.getElementById('phview').remove()" aria-label="Close">${ICON.x}</button></div>
+      <img src="${esc(u)}" alt="Photo ${i + 1} of ${esc(l.code)}">`;
+    v.addEventListener('click', e => { if (e.target === v) v.remove(); });
+    document.body.appendChild(v);
+  },
+  async delPhoto(i) {
+    const l = L(), id = l?.photo_ids?.[i]; if (!id) return;
+    if (!await confirmBox('Delete this photo?', 'It is removed from the app and from Cloudinary.', 'Delete', 1)) return;
+    await guard(async () => {
+      let msg = 'Photo deleted';
+      try {
+        const r = await fn('photo-delete', { photo_id: id });
+        if (r.cloud === 'failed') msg = 'Photo removed from the app. Cloudinary could not delete its copy; this is noted in Activity.';
+        else if (r.cloud === 'skipped') msg = 'Photo removed from the app. ' + (r.detail || 'The Cloudinary copy was not removed.') + '.';
+      } catch (e) {
+        // photo-delete not set up yet (or down): still take it out of the app, so nobody is stuck
+        if (e.status !== 404 && !(e.status >= 500)) throw e;
+        await write('delete_photo', { p_photo_id: id });
+        msg = 'Photo removed from the app. The Cloudinary copy stays until photo-delete is set up.';
+      }
+      document.getElementById('phview')?.remove();
+      if ((l.photos || []).length <= 1) photoEdit = false;
+      await after(msg);
+    });
+  },
+
+  // ----- delete the laptop (admin) -----
+  async delLaptop() {
+    const l = L(); if (!l) return;
+    let chk; try { chk = await read('delete_laptop_check', { p_laptop_id: l.id }); } catch (e) { return toast(e.message); }
+    if (chk.reason) return dialog({ title: 'This laptop cannot be deleted', body: esc(chk.reason), ok: 'OK' });
+    let mode = 'reduce';
+    const body = `${esc(l.code)} goes to More → Recently deleted for 30 days. Its sticker number is never used again.`;
+    let yes;
+    if (+chk.cost > 0) {
+      const opts = [['reduce', `Reduce the lot cost by ${rs(chk.cost)}`]];
+      if (chk.can_keep) opts.push(['keep', `Keep the lot cost (share ${rs(chk.cost)} over the other ${chk.keep_count} unsold)`]);
+      const pr = dialog({ title: `Delete laptop ${esc(l.code)}?`, body, ok: 'Delete laptop', danger: true,
+        html: `<label>This laptop's cost (${rs(chk.cost)})</label>${chips('dlcost', opts, 'reduce', 'wrap')}` });
+      $('dlcost')?.addEventListener('change', () => { mode = chipVal('dlcost') || 'reduce'; });
+      yes = await pr;
+    } else yes = await confirmBox(`Delete laptop ${esc(l.code)}?`, body, 'Delete laptop', 1);
+    if (!yes) return;
+    await guard(async () => {
+      await write('delete_laptop', { p_laptop_id: l.id, p_lot_cost: mode });
+      closeModal(); await load();
+      toast(`${l.code} deleted. You can restore it from More → Recently deleted for 30 days.`, 'ok');
+    });
   },
   printStickers
 };

@@ -5,7 +5,7 @@ import { toast, empty, openSheet, sheetHead, closeModal, confirmBox, dialog, gua
 import { S, load, isAdmin, isMgr, role } from '../api/store.js';
 import { read, write, fn, client } from '../api/client.js';
 import { lapName } from '../ui/specs.js';
-import { onShelf, testsPassed, noteLine } from './common.js';
+import { onShelf, testsPassed, noteLine, cloudThumb } from './common.js';
 
 let moneyDay = null, sharePrice = true, shareTested = true, actF = 'all', older = [], shopMonth = null;
 const ROLE_NAME = { admin: 'Admin', coadmin: 'Co-admin', staff: 'Staff' };
@@ -16,7 +16,25 @@ export const views = {
     const mgr = isMgr(), adm = isAdmin();
     return `<div class="card more">${mgr ? it('money', 'cash', "Today's money", 'Cash, UPI and bank in and out for any day') : ''}${it('share', 'share', 'Share stock list', 'Ready-made WhatsApp message of what is available')}${it('prices', 'tag', 'Model prices', 'Usual selling price for each model')}${it('partners', 'tool', 'Service partners', 'Technicians and repair shops, laptops with them')}</div>
     ${mgr ? `<div class="card more">${it('reports', 'chart', 'Reports', 'Sales, profit, lead sources and graphs by month and year')}${it('suppliers', 'truck', 'Suppliers', adm ? 'Supplier numbers and what you owe each one' : 'Supplier numbers and repair quality')}${adm ? it('debts', 'wallet', 'Liabilities', 'Supplier and service dues, rent, loans and borrowed money') + it('shopexp', 'cash', 'Shop expenses', 'Rent, electricity, salaries and other running costs') + it('lotpnl', 'list', 'Lot P&L', 'Cost, sales and profit of each lot') : ''}${it('activity', 'list', 'Activity', 'Who did what, and when')}</div>` : ''}
-    <div class="card more">${adm ? it('users', 'user', 'Users', 'Add people, change roles, reset PINs') + it('settings', 'gear', 'Settings', 'Shop details, warranty and photo storage') + it('backup', 'cloud', 'Backup and import', 'Download, restore, bring in the Excel or old app data') : ''}${it('pin', 'key', 'Change my PIN', 'Your 6-digit login PIN')}</div>`;
+    <div class="card more">${adm ? it('users', 'user', 'Users', 'Add people, change roles, reset PINs') + it('settings', 'gear', 'Settings', 'Shop details, warranty and photo storage') + it('backup', 'cloud', 'Backup and import', 'Download, restore, bring in the Excel or old app data') + it('deleted', 'trash', 'Recently deleted', 'Laptops, lots, suppliers, partners and photos deleted in the last 30 days') : ''}${it('pin', 'key', 'Change my PIN', 'Your 6-digit login PIN')}</div>`;
+  },
+
+  // Recently deleted (admin): the last 30 days, with Restore. Older ones are removed for good by the daily cleanup.
+  async deleted() {
+    const list = await read('recently_deleted');
+    const KIND = { laptop: 'Laptop', lot: 'Lot', supplier: 'Supplier', partner: 'Service partner', photo: 'Photo' };
+    const IC = { laptop: 'stock', lot: 'box', supplier: 'truck', partner: 'tool', photo: 'cam' };
+    const extra = x => x.kind === 'laptop' && x.mode === 'reduce' ? `Lot cost was reduced by ${rs(x.cost)}; restore adds it back.`
+      : x.kind === 'laptop' && x.mode === 'keep' ? `Its ${rs(x.cost)} was shared over the other laptops; restore moves it back.`
+      : x.kind === 'photo' && x.cloud === 'deleted' ? 'Also removed from Cloudinary, so it cannot come back.'
+      : x.kind === 'photo' && x.cloud === 'failed' ? 'Cloudinary could not delete its copy, so it can still come back.' : '';
+    return `<p class="muted" style="margin:0 2px 12px">Deleted items stay here for 30 days, then they are removed for good. Restore puts them back exactly as they were.</p>
+    <div class="list">${list.length ? list.map(x => `<div class="crow"><div class="av sq">${x.kind === 'photo' && x.url ? `<img class="lthumb" src="${esc(cloudThumb(x.url))}" alt="" loading="lazy">` : ICON[IC[x.kind]] || ''}</div>
+      <div class="cm"><span class="mtag">${KIND[x.kind] || x.kind}</span><b style="display:block;margin-top:4px">${esc(x.label)}</b>
+        <div class="muted">Deleted by ${esc(x.by)}, ${fmtD(x.deleted_at.slice(0, 10))}. ${x.days_left} day${x.days_left === 1 ? '' : 's'} left.</div>
+        ${extra(x) ? `<div class="muted" style="margin-top:2px">${extra(x)}</div>` : ''}</div>
+      <div class="cr">${x.can_restore ? `<button class="sm" onclick="A.restoreDeleted('${x.id}')">Restore</button>` : ''}</div></div>`).join('')
+      : empty(ICON.trash, 'Nothing deleted', 'Items you delete stay here for 30 days, so a mistake can be undone.')}</div>`;
   },
 
   async money() {
@@ -191,6 +209,9 @@ export const actions = {
   async saveShopExp() {
     const a = num('seamt'); if (!a) return toast('Enter the amount');
     await guard(async () => { await write('add_shop_expense', { p_type: chipVal('setype'), p_amount: a, p_method: chipVal('semeth'), p_ref: val('seref'), p_note: val('senote'), p_spent_on: val('sedate') || null }); closeModal(); await load(); toast('Saved', 'ok'); });
+  },
+  async restoreDeleted(id) {
+    await guard(async () => { const r = await write('restore_deleted', { p_deletion_id: id }); await load(); A.refresh(); toast(`Restored: ${r.label}`, 'ok'); });
   },
   async delShopExp(id) {
     if (!await confirmBox('Delete this expense?', 'It is removed from the month\'s net profit.', 'Delete', 1)) return;

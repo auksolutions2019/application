@@ -2,7 +2,7 @@
 // - serves the app's files, with a config.js pointing here
 // - /rest/v1/rpc/*  runs the real database functions (all migrations) on PGlite, as the logged-in user
 // - /rest/v1/laptops and /rest/v1/profiles: the two direct table uses
-// - /auth/v1/* and /functions/v1/*: simple versions of Supabase Auth and the three Edge Functions
+// - /auth/v1/* and /functions/v1/*: simple versions of Supabase Auth and the Edge Functions
 // Not for production. Usage: node tests/ui/devserver.mjs   then open http://localhost:8787
 // Demo logins: Admin 9900000001, Co-admin 9900000002, Staff 9900000003; PIN 246810 for all.
 import http from 'node:http';
@@ -105,6 +105,19 @@ export async function startDevServer({ port = 8787, quiet = false } = {}) {
     if (b.action === 'set_active') { if (t.id === m.id && !b.active) return [400, { message: 'You cannot turn yourself off' }]; await db.query(`update public.profiles set active = $2 where id = $1`, [t.id, !!b.active]); if (!b.active) await db.query(`delete from public.app_sessions where user_id = $1`, [t.id]); await log(`${b.active ? 'Turned on' : 'Turned off'} user ${t.name}`); return [200, { ok: true }]; }
     return [400, { message: 'Unknown action' }];
   }
+  // photo-delete: the real function runs delete_photo as the caller, then deletes the Cloudinary copy.
+  // Here Cloudinary always "succeeds"; setPhotoDelete('missing') acts as if the function was not deployed.
+  let photoMode = 'ok';
+  async function photoDelete(b, claims) {
+    if (photoMode === 'missing') return [404, { code: 'NOT_FOUND', message: 'Requested function was not found' }];
+    if (!claims) return [401, { error: 'auth', message: 'Please log in again.' }];
+    let d;
+    try { d = (await asUser(claims, () => db.query('select public.delete_photo($1) r', [b.photo_id]))).rows[0].r; }
+    catch (e) { return [400, { error: 'db', message: e.message }]; }
+    await db.exec('set role service_role');
+    try { await db.query("select public.photo_cloud_result($1, 'deleted', '')", [d.deletion_id]); } finally { await db.exec('reset role'); }
+    return [200, { ok: true, code: d.code, cloud: 'deleted', detail: '' }];
+  }
   async function changePin(b, claims) {
     const m = await me(claims); if (!m) return [401, { message: 'Please log in again.' }];
     if (pins.get(m.id) !== b.old_pin) return [401, { error: 'wrong', message: 'The current PIN is wrong' }];
@@ -136,7 +149,7 @@ export async function startDevServer({ port = 8787, quiet = false } = {}) {
       }
       if (p.startsWith('/functions/v1/')) {
         const body = await readBody(req), name = p.slice(14), c = claimsOf(req);
-        return serial(async () => { try { const [st, out] = name === 'auth-login' ? await authLogin(body) : name === 'admin-users' ? await adminUsers(body, c) : name === 'change-pin' ? await changePin(body, c) : [404, { message: 'no function' }]; send(res, st, out); } catch (e) { send(res, 500, { message: e.message }); } });
+        return serial(async () => { try { const [st, out] = name === 'auth-login' ? await authLogin(body) : name === 'admin-users' ? await adminUsers(body, c) : name === 'change-pin' ? await changePin(body, c) : name === 'photo-delete' ? await photoDelete(body, c) : [404, { message: 'no function' }]; send(res, st, out); } catch (e) { send(res, 500, { message: e.message }); } });
       }
       if (p.startsWith('/realtime/')) return send(res, 404, { message: 'Realtime is not part of the local stand-in' });
       // static files
@@ -148,7 +161,7 @@ export async function startDevServer({ port = 8787, quiet = false } = {}) {
   });
   await new Promise(r => server.listen(port, r));
   if (!quiet) console.log(`Local stand-in running at http://localhost:${port}  (logins: ${USERS.map(u => `${u.role} ${u.mobile}`).join(', ')}; PIN ${PIN})`);
-  return { server, db, rpc, close: () => new Promise(r => server.close(r)) };
+  return { server, db, rpc, setPhotoDelete: m => { photoMode = m; }, close: () => new Promise(r => server.close(r)) };
 }
 
 // A little sample data so every screen has something to show

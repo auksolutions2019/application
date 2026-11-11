@@ -1,7 +1,7 @@
 // Stock: lots (with their laptops, expenses, bulk sale) and all laptops (search and filters).
 import { $, esc, rs, tag, MON, chips, chipVal, val, num, todayIN, fmtD } from '../ui/dom.js';
 import { ICON } from '../ui/icons.js';
-import { toast, empty, openSheet, sheetHead, closeModal, confirmBox, dialog, guard, METHODS } from '../ui/feedback.js';
+import { toast, empty, openSheet, sheetHead, closeModal, confirmBox, dialog, guard, METHODS, kebab } from '../ui/feedback.js';
 import { S, load, isAdmin, isMgr, role } from '../api/store.js';
 import { read, write } from '../api/client.js';
 import { lapName, PROCS, RAMS } from '../ui/specs.js';
@@ -40,7 +40,9 @@ function lotDetail(b) {
   const canPick = l => owned(l) && !l.booking && !atService(l);
   const avail = ls.filter(canPick);
   const dealers = [...new Map(S.d.laptops.filter(l => l.sale?.customer_type === 'Dealer' && l.sale.mobile).map(l => [l.sale.mobile, l.sale])).values()];
-  return `<div class="ld" id="bdetail">
+  const menu = kebab([['Print all stickers', `A.printLot('${b.id}')`], mgr && b.kind !== 'exchange' ? ['Add parts / expense', `A.addLotExpense('${b.id}')`] : null,
+    adm && b.kind !== 'exchange' ? ['Delete lot', `A.delLot('${b.id}')`, true] : null], 'Lot actions');
+  return `<div class="ld" id="bdetail"><div class="ldtop">${menu}</div>
   ${adm ? `<div class="ldm"><span>Lot cost ${b.cost != null ? rs(b.cost) : '–'}</span><span>${b.cost_missing ? `<b style="color:#9A6200">${b.cost_missing} without cost</b>` : 'All costs entered'}</span></div>` : ''}
   <h3 class="sh" style="margin-top:10px">Laptops in this lot</h3><div class="list flat" style="margin-top:8px">${b.lines.map(ln => `<div class="lrow" style="cursor:default"><span class="cm"><b>${esc(grpLabel(ln))}</b><span class="muted">${ln.qty} laptop${ln.qty > 1 ? 's' : ''}</span></span>
     ${adm ? (ln.line_cost != null ? `<b>${rs(ln.line_cost)}</b><span class="muted">${rs(ln.line_cost / ln.qty)} each</span>` : `<button class="sm" onclick="A.fillLineCost('${ln.id}',${ln.qty})">Fill in cost</button>`) : ''}
@@ -139,6 +141,24 @@ export const actions = {
       await write('add_lot_expense', { p_lot_id: lotId, p_type: chipVal('xtype'), p_count: cnt || 1, p_amount: amt, p_method: chipVal('xmeth'),
         p_line_id: chipVal('xline') || null, p_ref: val('xref'), p_note: val('xnote'), p_spent_on: val('xdate') || null });
       closeModal(); await load(); toast('Expense saved', 'ok');
+    });
+  },
+  // Delete a lot (admin): only when none of its laptops has a customer or service history. Type the lot code to confirm.
+  async delLot(id) {
+    let chk; try { chk = await read('delete_lot_check', { p_lot_id: id }); } catch (e) { return toast(e.message); }
+    if (chk.blockers.length) {
+      return dialog({ title: `Lot ${esc(chk.prefix)} cannot be deleted`, ok: 'OK',
+        body: `These laptops have a customer or service history, so they stay:`,
+        html: `<div class="list flat blk">${chk.blockers.slice(0, 12).map(x => `<div class="lrow" style="cursor:default"><span class="cm">${tag(x.code)}<span class="muted" style="display:block;margin-top:4px">${esc(x.reason)}</span></span></div>`).join('')}${chk.blockers.length > 12 ? `<p class="muted" style="padding:8px">and ${chk.blockers.length - 12} more</p>` : ''}</div>` });
+    }
+    const typed = await dialog({ title: `Delete lot ${esc(chk.prefix)}?`, ok: 'Delete lot', danger: true, text: true, placeholder: chk.prefix,
+      body: `Its ${chk.laptops} laptop${chk.laptops === 1 ? '' : 's'}${chk.expenses ? ` and ${chk.expenses} expense${chk.expenses === 1 ? '' : 's'}` : ''} go with it, to More → Recently deleted for 30 days. Its sticker numbers are never used again.<br><br>Type <b>${esc(chk.prefix)}</b> to confirm.` });
+    if (typed == null) return;
+    if (typed.trim() !== chk.prefix) return toast(`Type ${chk.prefix} exactly to delete the lot`);
+    await guard(async () => {
+      const r = await write('delete_lot', { p_lot_id: id, p_confirm: typed.trim() });
+      openLot = null; await load();
+      toast(`Lot ${r.prefix} deleted with ${r.laptops} laptop${r.laptops === 1 ? '' : 's'}. You can restore it from More → Recently deleted.`, 'ok');
     });
   },
   async delLotExpense(id) {

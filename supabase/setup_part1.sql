@@ -1,8 +1,8 @@
 -- =====================================================================
--- First Choice Laptops, Stock Manager: database setup, PART 1 OF 2
+-- First Choice Laptops, Stock Manager: database setup, PART 1 OF 3
 -- Generated from supabase/migrations by tools/build-setup.mjs. Do not edit by hand.
--- The same SQL as setup_all.sql, split in two because the SQL Editor may refuse one big query.
--- Run part 1 first, then part 2 in a new query. Both are safe to run again.
+-- The same SQL as setup_all.sql, split because the SQL Editor may refuse one big query.
+-- Run the parts in order (1, 2, 3), each in a new query. All are safe to run again.
 -- =====================================================================
 
 -- ---------------------------------------------------------------------
@@ -1672,13 +1672,16 @@ begin
   if p_bought_on > private.today() then raise exception 'The purchase date cannot be in the future'; end if;
   if p_kind not in ('purchase','opening') then raise exception 'Lot type must be purchase or opening stock'; end if;
   if jsonb_typeof(p_lines) is distinct from 'array' or jsonb_array_length(p_lines) = 0 then
-    raise exception 'Add at least one line';
+    raise exception 'Add at least one laptop';
   end if;
-  if jsonb_array_length(p_lines) > 99 then raise exception 'A lot can have up to 99 lines'; end if;
+  if jsonb_array_length(p_lines) > 99 then raise exception 'A lot can have up to 99 kinds of laptops'; end if;
   select coalesce(sum((x ->> 'qty')::int), 0) into v_total from jsonb_array_elements(p_lines) x;
   if v_total > 500 then raise exception 'A lot can have up to 500 laptops'; end if;
 
   v_prefix := s.code || '-' || lpad(p_lot_no::text, 2, '0') || '-' || to_char(p_bought_on, 'MM') || '-' || to_char(p_bought_on, 'YY');
+  if exists (select 1 from public.lots where prefix = v_prefix and deleted_at is not null) then
+    raise exception 'Lot % was deleted, so its sticker numbers cannot be used again. Use the next lot number.', v_prefix;
+  end if;
   if exists (select 1 from public.lots where prefix = v_prefix) then
     raise exception 'Lot % already exists. Change the lot number.', v_prefix;
   end if;
@@ -1691,9 +1694,9 @@ begin
   for ln in select * from jsonb_array_elements(p_lines) loop
     i := i + 1;
     v_qty := (ln ->> 'qty')::int;
-    if v_qty is null or v_qty < 1 then raise exception 'Line %: enter the number of laptops', i; end if;
+    if v_qty is null or v_qty < 1 then raise exception 'Laptops %: enter how many', i; end if;
     v_cost := (ln ->> 'cost')::numeric;
-    if v_cost is not null and (v_cost < 0 or v_cost <> round(v_cost, 2)) then raise exception 'Line %: check the cost', i; end if;
+    if v_cost is not null and (v_cost < 0 or v_cost <> round(v_cost, 2)) then raise exception 'Laptops %: check the cost', i; end if;
     v_mixed := coalesce((ln ->> 'is_mixed')::boolean, false);
 
     insert into public.lot_lines (lot_id, line_no, is_mixed, brand, brand_other, model, processor, processor_other,
@@ -1737,7 +1740,7 @@ declare ln public.lot_lines; lo public.lots;
 begin
   perform private.require_admin();
   select * into ln from public.lot_lines where id = p_line_id for update;
-  if not found then raise exception 'Lot line not found'; end if;
+  if not found then raise exception 'These laptops are not in the lot'; end if;
   select * into lo from public.lots where id = ln.lot_id;
   if lo.kind = 'exchange' then raise exception 'Exchange laptops get their cost from the exchange value'; end if;
   if p_cost is not null and (p_cost < 0 or p_cost <> round(p_cost, 2)) then raise exception 'Check the cost'; end if;
@@ -1764,7 +1767,7 @@ begin
   perform 1 from public.lots where id = p_lot_id;
   if not found then raise exception 'Lot not found'; end if;
   if p_line_id is not null and not exists (select 1 from public.lot_lines where id = p_line_id and lot_id = p_lot_id) then
-    raise exception 'That line is not in this lot';
+    raise exception 'Those laptops are not in this lot';
   end if;
   if p_type is null or p_type not in ('SSD','RAM','Battery','Charger','HDD','Keyboard','Screen','Transport','Repair labour','Other') then
     raise exception 'Choose the expense type';
@@ -1840,7 +1843,7 @@ begin
   if p_lot_expense_id is not null then
     select * into e from public.lot_expenses where id = p_lot_expense_id and deleted_at is null for update;
     if not found or e.lot_id <> l.lot_id or (e.line_id is not null and e.line_id <> l.line_id) then
-      raise exception 'Those parts were bought for another lot or line';
+      raise exception 'Those parts were bought for other laptops';
     end if;
     select * into f from private.fitted(e.id);
     if f.units >= e.count then raise exception 'No % left from that purchase', e.type; end if;

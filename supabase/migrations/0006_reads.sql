@@ -63,7 +63,8 @@ language sql stable set search_path = '' as $$
                                                              'from_lot_stock', r.lot_expense_id is not null)
                                           order by r.done_on, r.created_at)
                          from public.repairs r where r.laptop_id = l.id and r.deleted_at is null), '[]'),
-    'photos', coalesce((select jsonb_agg(p.url order by p.created_at) from public.photos p where p.laptop_id = l.id), '[]'),
+    'photos', coalesce((select jsonb_agg(p.url order by p.created_at) from private.live_photos p where p.laptop_id = l.id), '[]'),
+    'photo_ids', coalesce((select jsonb_agg(p.id order by p.created_at) from private.live_photos p where p.laptop_id = l.id), '[]'),
     'sale', (select private.sale_json(s.id, p_role) from public.sales s where s.laptop_id = l.id and s.status = 'active'),
     'booking', (select private.booking_json(b.id) from public.bookings b where b.laptop_id = l.id and b.status = 'open'),
     'returns', coalesce((select jsonb_agg(jsonb_build_object(
@@ -82,14 +83,15 @@ language sql stable set search_path = '' as $$
                                          and j.status = 'returned' and not exists (select 1 from public.service_charges c where c.job_id = j.id)),
        'full_cost', round(private.full_cost(l.id), 2))
      else '{}'::jsonb end
-  from public.laptops l where l.id = p_id
+  from private.live_laptops l where l.id = p_id
 $$;
 
 create or replace function private.line_json(p_line uuid, p_role text) returns jsonb
 language sql stable set search_path = '' as $$
   select jsonb_build_object('id', ln.id, 'line_no', ln.line_no, 'is_mixed', ln.is_mixed, 'brand', ln.brand,
     'brand_other', ln.brand_other, 'model', ln.model, 'processor', ln.processor, 'processor_other', ln.processor_other,
-    'gen', ln.gen, 'ram_gb', ln.ram_gb, 'storage_type', ln.storage_type, 'storage_gb', ln.storage_gb, 'qty', ln.qty,
+    'gen', ln.gen, 'ram_gb', ln.ram_gb, 'storage_type', ln.storage_type, 'storage_gb', ln.storage_gb,
+    'qty', (select count(*) from private.live_laptops x where x.line_id = ln.id),   -- deleted laptops are not counted
     'label', case when ln.is_mixed then 'Mixed'
                   else coalesce(nullif(concat_ws(' ', nullif(private.shorthand(ln.brand, ln.brand_other, ln.processor, ln.processor_other,
                                 ln.gen, ln.ram_gb, ln.storage_type, ln.storage_gb), ''), nullif(ln.model, '')), ''), 'Line ' || ln.line_no) end)
@@ -113,19 +115,20 @@ language sql stable set search_path = '' as $$
     'supplier_name', case when p_role = 'staff' then null else s.name end,
     'lot_no', lo.lot_no, 'month', lo.month, 'year', lo.year, 'prefix', lo.prefix, 'kind', lo.kind,
     'bought_on', lo.bought_on, 'note', lo.note,
-    'qty', (select count(*) from public.laptops where lot_id = lo.id),
-    'sold', (select count(*) from public.laptops x where x.lot_id = lo.id and private.is_sold(x.id)),
+    'qty', (select count(*) from private.live_laptops where lot_id = lo.id),
+    'sold', (select count(*) from private.live_laptops x where x.lot_id = lo.id and private.is_sold(x.id)),
     'lines', coalesce((select jsonb_agg(private.line_json(ln.id, p_role) order by ln.line_no)
-                       from public.lot_lines ln where ln.lot_id = lo.id), '[]'),
+                       from public.lot_lines ln where ln.lot_id = lo.id
+                         and exists (select 1 from private.live_laptops x where x.line_id = ln.id)), '[]'),
     'expenses', case when p_role = 'staff' then '[]'::jsonb else
                 coalesce((select jsonb_agg(private.lot_expense_json(e.id) order by e.spent_on, e.created_at)
                           from public.lot_expenses e where e.lot_id = lo.id and e.deleted_at is null), '[]') end)
   || case when p_role = 'admin' then jsonb_build_object(
-       'cost', (select sum(c.cost) from public.laptop_costs c join public.laptops l on l.id = c.laptop_id where l.lot_id = lo.id),
-       'cost_missing', (select count(*) from public.laptops l where l.lot_id = lo.id
+       'cost', (select sum(c.cost) from public.laptop_costs c join private.live_laptops l on l.id = c.laptop_id where l.lot_id = lo.id),
+       'cost_missing', (select count(*) from private.live_laptops l where l.lot_id = lo.id
                         and not exists (select 1 from public.laptop_costs c where c.laptop_id = l.id)))
      else '{}'::jsonb end
-  from public.lots lo join public.suppliers s on s.id = lo.supplier_id
+  from private.live_lots lo join private.live_suppliers s on s.id = lo.supplier_id
   where lo.id = p_lot
 $$;
 
@@ -135,28 +138,30 @@ language sql stable set search_path = '' as $$
     select l.id, (select count(*) from public.repairs r where r.laptop_id = l.id and r.deleted_at is null) > 0 repaired,
            private.repairs_of(l.id) rep,
            (select private.profit(sa.id) from public.sales sa where sa.laptop_id = l.id and sa.status = 'active') profit
-    from public.laptops l join public.lots lo on lo.id = l.lot_id where lo.supplier_id = p_sup
+    from private.live_laptops l join private.live_lots lo on lo.id = l.lot_id where lo.supplier_id = p_sup
   )
   select jsonb_build_object('id', s.id, 'code', s.code, 'name', s.name, 'phone', s.phone,
-    'lots', (select count(*) from public.lots where supplier_id = s.id),
+    'lots', (select count(*) from private.live_lots where supplier_id = s.id),
+    -- highest lot number ever used, deleted lots included (their sticker numbers are never reused)
+    'max_lot_no', (select coalesce(max(lot_no), 0) from public.lots where supplier_id = s.id),
     'quality', (select case when count(*) = 0 then null else jsonb_build_object(
                   'n', count(*),
                   'pct_rep', round(100.0 * count(*) filter (where repaired) / count(*)),
                   'avg_rep', round(sum(rep) / count(*), 2),
                   'avg_profit', case when p_role = 'admin' then round(avg(profit), 2) end) end from ls))
   || case when p_role = 'admin' then jsonb_build_object(
-       'bought', coalesce((select sum(c.cost) from public.laptop_costs c join public.laptops l on l.id = c.laptop_id
-                           join public.lots lo on lo.id = l.lot_id where lo.supplier_id = s.id), 0),
+       'bought', coalesce((select sum(c.cost) from public.laptop_costs c join private.live_laptops l on l.id = c.laptop_id
+                           join private.live_lots lo on lo.id = l.lot_id where lo.supplier_id = s.id), 0),
        'paid', case when s.code = '00' then null else
                coalesce((select sum(amount) from public.supplier_payments where supplier_id = s.id), 0) end,
        'due', private.supplier_due(s.id),
        'payments', coalesce((select jsonb_agg(jsonb_build_object('id', sp.id, 'paid_on', sp.paid_on, 'amount', sp.amount, 'method', sp.method,
                                                  'ref', sp.ref, 'note', sp.note) order by sp.paid_on desc, sp.created_at desc)
                              from (select * from public.supplier_payments where supplier_id = s.id order by paid_on desc, created_at desc limit 30) sp), '[]'),
-       'cost_missing', (select count(*) from public.laptops l join public.lots lo on lo.id = l.lot_id
+       'cost_missing', (select count(*) from private.live_laptops l join private.live_lots lo on lo.id = l.lot_id
                         where lo.supplier_id = s.id and not exists (select 1 from public.laptop_costs c where c.laptop_id = l.id)))
      else '{}'::jsonb end
-  from public.suppliers s where s.id = p_sup
+  from private.live_suppliers s where s.id = p_sup
 $$;
 
 -- Sold more than 12 months ago and fully paid: left out of the snapshot (fetched on demand).
@@ -177,11 +182,11 @@ begin
     'today', private.today(),
     'settings', (select to_jsonb(s) - 'id' - 'created_at' - 'updated_at' - 'updated_by' from public.settings s),
     'suppliers', case when r = 'staff' then '[]'::jsonb else
-                 coalesce((select jsonb_agg(private.supplier_json(s.id, r) order by s.code) from public.suppliers s), '[]') end,
-    'lots', coalesce((select jsonb_agg(private.lot_json(lo.id, r) order by lo.bought_on, lo.created_at) from public.lots lo), '[]'),
+                 coalesce((select jsonb_agg(private.supplier_json(s.id, r) order by s.code) from private.live_suppliers s), '[]') end,
+    'lots', coalesce((select jsonb_agg(private.lot_json(lo.id, r) order by lo.bought_on, lo.created_at) from private.live_lots lo), '[]'),
     'laptops', coalesce((select jsonb_agg(private.laptop_json(l.id, r) order by l.created_at, l.code)
-                         from public.laptops l where not private.is_old_sold(l.id)), '[]'),
-    'hidden_sold', (select count(*) from public.laptops l where private.is_old_sold(l.id)),
+                         from private.live_laptops l where not private.is_old_sold(l.id)), '[]'),
+    'hidden_sold', (select count(*) from private.live_laptops l where private.is_old_sold(l.id)),
     'prices', coalesce((select jsonb_object_agg(shorthand, price) from public.model_prices), '{}'),
     'debts', case when r <> 'admin' then '[]'::jsonb else
              coalesce((select jsonb_agg(jsonb_build_object('id', d.id, 'name', d.name, 'type', d.type, 'amount', d.amount,
@@ -198,17 +203,17 @@ begin
                                  'cancelled_on', b.cancelled_on,
                                  'advance', (select sum(amount) from public.booking_payments where booking_id = b.id))
                                order by b.cancelled_on)
-                               from public.bookings b join public.laptops l on l.id = b.laptop_id
+                               from public.bookings b join private.live_laptops l on l.id = b.laptop_id
                                join public.customers c on c.id = b.customer_id
                                where b.advance_status = 'held'), '[]') end,
     'partners', coalesce((select jsonb_agg(private.partner_json(p.id, r) order by p.active desc, private.partner_label(p.id))
-                          from public.service_partners p), '[]'),
+                          from private.live_partners p), '[]'),
     'service_owed', case when r <> 'admin' then null else
-                    (select coalesce(sum(greatest(private.partner_owed(p.id), 0)), 0) from public.service_partners p) end,
+                    (select coalesce(sum(greatest(private.partner_owed(p.id), 0)), 0) from private.live_partners p) end,
     'stock_value', case when r <> 'admin' then null else
                    (select jsonb_build_object('value', round(coalesce(sum(private.full_cost(l.id)), 0), 2),
                                               'cost_missing', count(*) filter (where private.cost_of(l.id) is null))
-                    from public.laptops l where not private.is_sold(l.id)) end,
+                    from private.live_laptops l where not private.is_sold(l.id)) end,
     'activity', case when r = 'staff' then '[]'::jsonb else
                 coalesce((select jsonb_agg(to_jsonb(a) order by a.id desc)
                           from (select id, at, actor_name, actor_role, message from public.activity_log
@@ -225,7 +230,7 @@ begin
   if c !~ '-' and length(d) = 11 then
     c := substr(d, 1, 2) || '-' || substr(d, 3, 2) || '-' || substr(d, 5, 2) || '-' || substr(d, 7, 2) || '-' || substr(d, 9, 3);
   end if;
-  return (select private.laptop_json(l.id, r) from public.laptops l where l.code = c);
+  return (select private.laptop_json(l.id, r) from private.live_laptops l where l.code = c);
 end $$;
 
 create or replace function public.search_laptops(p_q text, p_limit int default 60)
@@ -236,7 +241,7 @@ begin
   d := regexp_replace(q, '\D', '', 'g');
   return coalesce((
     select jsonb_agg(private.laptop_json(x.id, r))
-    from (select l.id from public.laptops l
+    from (select l.id from private.live_laptops l
           left join public.sales s on s.laptop_id = l.id and s.status = 'active'
           left join public.customers c on c.id = s.customer_id
           where position(q in lower(l.code)) > 0
@@ -255,7 +260,7 @@ returns jsonb language plpgsql stable security definer set search_path = '' as $
 declare r text := private.require_user();
 begin
   return coalesce((select jsonb_agg(private.laptop_json(l.id, r) order by l.piece_no)
-                   from public.laptops l where l.lot_id = p_lot_id), '[]');
+                   from private.live_laptops l where l.lot_id = p_lot_id), '[]');
 end $$;
 
 create or replace function public.old_sold_laptops(p_offset int default 0, p_limit int default 100)
@@ -297,7 +302,7 @@ begin
              (array_agg(l.code order by s.sold_on desc))[1:4] codes
       from public.customers c
       join public.sales s on s.customer_id = c.id and s.status = 'active'
-      join public.laptops l on l.id = s.laptop_id
+      join private.live_laptops l on l.id = s.laptop_id
       group by c.id) x), '[]');
 end $$;
 
@@ -309,19 +314,19 @@ begin
   return jsonb_build_object('date', p_date,
     'ins', coalesce((select jsonb_agg(x) from (
         select p.amount amt, p.method m, private.cust_label(s.customer_name, s.lead_source) || ', ' || l.code t, p.note n, p.id id, 'sale_payment' k
-        from public.sale_payments p join public.sales s on s.id = p.sale_id join public.laptops l on l.id = s.laptop_id
+        from public.sale_payments p join public.sales s on s.id = p.sale_id join private.live_laptops l on l.id = s.laptop_id
         where p.paid_on = p_date and p.reversal_of is null and p.booking_payment_id is null and s.status <> 'voided'
         union all
         select bp.amount, bp.method, private.cust_label(b.customer_name, b.lead_source) || ' (advance), ' || l.code, bp.note, bp.id, 'booking_payment'
-        from public.booking_payments bp join public.bookings b on b.id = bp.booking_id join public.laptops l on l.id = b.laptop_id
+        from public.booking_payments bp join public.bookings b on b.id = bp.booking_id join private.live_laptops l on l.id = b.laptop_id
         where bp.paid_on = p_date) x), '[]'),
     'outs', coalesce((select jsonb_agg(x) from (
         select r.amount amt, 'Cash' m, 'Repair on ' || l.code || ': ' || r.work t, '' n, null::uuid id, null k
-        from public.repairs r join public.laptops l on l.id = r.laptop_id
+        from public.repairs r join private.live_laptops l on l.id = r.laptop_id
         where r.done_on = p_date and r.deleted_at is null and r.lot_expense_id is null
         union all
         select e.amount, e.method, 'Parts for lot ' || lo.prefix || ': ' || e.count || ' x ' || e.type, e.note, e.id, 'lot_expense'
-        from public.lot_expenses e join public.lots lo on lo.id = e.lot_id
+        from public.lot_expenses e join private.live_lots lo on lo.id = e.lot_id
         where e.spent_on = p_date and e.deleted_at is null
         union all
         -- supplier, Liabilities, shop and service payments: in full for admin; one combined line per method for co-admin
@@ -329,7 +334,7 @@ begin
                case when adm then max(b.n) else '' end, case when adm then b.k end, case when adm then max(b.kind) end
         from (
           select sp.amount amt, sp.method m, 'Supplier ' || s.name t, sp.note n, sp.id k, 'supplier_payment' kind
-          from public.supplier_payments sp join public.suppliers s on s.id = sp.supplier_id where sp.paid_on = p_date
+          from public.supplier_payments sp join private.live_suppliers s on s.id = sp.supplier_id where sp.paid_on = p_date
           union all
           select dp.amount, dp.method, d.name, dp.note, dp.id, 'debt_payment'
           from public.debt_payments dp join public.debts d on d.id = dp.debt_id where dp.paid_on = p_date
@@ -400,7 +405,7 @@ begin
       'year', p_year,
       'years', (select jsonb_agg(y order by y desc) from (
                   select extract(year from private.today())::int y
-                  union select distinct year from public.lots
+                  union select distinct year from private.live_lots
                   union select distinct extract(year from sold_on)::int from public.sales where status = 'active') ys),
       'months', (select jsonb_agg(jsonb_build_object('m', m, 'n', n, 'sales', sales)
                    -- stock service charges are already inside gross (laptop cost); warranty repairs come off net
@@ -413,11 +418,11 @@ begin
       'collected', (select coalesce(sum(paid), 0) from sold),
       'pending', (select coalesce(sum(price - paid), 0) from sold),
       'batches', coalesce((select jsonb_agg(jsonb_build_object('prefix', lo.prefix,
-                    'qty', (select count(*) from public.laptops where lot_id = lo.id),
-                    'sold', (select count(*) from public.laptops x where x.lot_id = lo.id and private.is_sold(x.id)),
-                    'sales', (select coalesce(sum(s.price), 0) from public.sales s join public.laptops l on l.id = s.laptop_id
+                    'qty', (select count(*) from private.live_laptops where lot_id = lo.id),
+                    'sold', (select count(*) from private.live_laptops x where x.lot_id = lo.id and private.is_sold(x.id)),
+                    'sales', (select coalesce(sum(s.price), 0) from public.sales s join private.live_laptops l on l.id = s.laptop_id
                               where l.lot_id = lo.id and s.status = 'active'))
-                  order by lo.bought_on) from public.lots lo where lo.year = p_year), '[]')
+                  order by lo.bought_on) from private.live_lots lo where lo.year = p_year), '[]')
     ) || case when adm then jsonb_build_object(
            'repairs_sold', (select round(coalesce(sum(private.repairs_of(laptop_id)), 0), 2) from sold)) else '{}'::jsonb end
   );
@@ -455,18 +460,18 @@ begin
            order by x.bought_on desc)
     from (
       select lo.prefix, lo.kind, s.name supplier, lo.bought_on, lo.note,
-             (select count(*) from public.laptops where lot_id = lo.id) qty,
-             (select count(*) from public.laptops x where x.lot_id = lo.id and private.is_sold(x.id)) sold,
-             coalesce((select sum(c.cost) from public.laptop_costs c join public.laptops l on l.id = c.laptop_id where l.lot_id = lo.id), 0) purchase,
-             (select count(*) from public.laptops l where l.lot_id = lo.id
+             (select count(*) from private.live_laptops where lot_id = lo.id) qty,
+             (select count(*) from private.live_laptops x where x.lot_id = lo.id and private.is_sold(x.id)) sold,
+             coalesce((select sum(c.cost) from public.laptop_costs c join private.live_laptops l on l.id = c.laptop_id where l.lot_id = lo.id), 0) purchase,
+             (select count(*) from private.live_laptops l where l.lot_id = lo.id
               and not exists (select 1 from public.laptop_costs c where c.laptop_id = l.id)) cost_missing,
              -- parts fitted to single laptops are already inside an expense, so only manual repairs are added
              coalesce((select sum(amount) from public.lot_expenses where lot_id = lo.id and deleted_at is null), 0) lot_exp,
-             coalesce((select sum(r.amount) from public.repairs r join public.laptops l on l.id = r.laptop_id
+             coalesce((select sum(r.amount) from public.repairs r join private.live_laptops l on l.id = r.laptop_id
                        where l.lot_id = lo.id and r.deleted_at is null and r.lot_expense_id is null), 0) repairs,
-             coalesce((select sum(sa.price) from public.sales sa join public.laptops l on l.id = sa.laptop_id
+             coalesce((select sum(sa.price) from public.sales sa join private.live_laptops l on l.id = sa.laptop_id
                        where l.lot_id = lo.id and sa.status = 'active'), 0) sales,
-             coalesce((select round(sum(private.profit(sa.id)), 2) from public.sales sa join public.laptops l on l.id = sa.laptop_id
+             coalesce((select round(sum(private.profit(sa.id)), 2) from public.sales sa join private.live_laptops l on l.id = sa.laptop_id
                        where l.lot_id = lo.id and sa.status = 'active'), 0) gross
-      from public.lots lo join public.suppliers s on s.id = lo.supplier_id) x), '[]');
+      from private.live_lots lo join private.live_suppliers s on s.id = lo.supplier_id) x), '[]');
 end $$;

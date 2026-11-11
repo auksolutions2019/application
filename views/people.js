@@ -1,7 +1,7 @@
 // Customers, Suppliers, Liabilities.
 import { $, esc, rs, fmtD, tag, sum, chips, chipVal, val, num, initials, waLink, enc, dec, daysSince, todayIN } from '../ui/dom.js';
 import { ICON } from '../ui/icons.js';
-import { toast, empty, openSheet, sheetHead, closeModal, confirmBox, amountBox, dialog, guard } from '../ui/feedback.js';
+import { toast, empty, openSheet, sheetHead, closeModal, confirmBox, amountBox, dialog, guard, kebab } from '../ui/feedback.js';
 import { noteLine, thumb } from './common.js';
 import { S, load, isAdmin } from '../api/store.js';
 import { read, write } from '../api/client.js';
@@ -39,7 +39,7 @@ export const views = {
        ${q ? `<div class="qual"><span class="${q.pct_rep > 50 ? 'bad' : q.pct_rep > 25 ? 'mid' : 'good'}">${q.pct_rep}% needed repair</span><span>Repairs ${rs(q.avg_rep)} per laptop</span>${adm && q.avg_profit != null ? `<span>Profit ${rs(q.avg_profit)} each</span>` : ''}</div>` : ''}
        ${adm && s.code !== '00' ? `<div class="prog sm"><i style="width:${s.bought ? Math.min(100, s.paid / s.bought * 100) : 0}%;background:var(--green)"></i></div>` : ''}</div>
       <div class="cr">${adm && s.code !== '00' ? (s.due > 0 ? `<span class="pill due">${rs(s.due)}</span>` : '<span class="pill sold">Settled</span>') : ''}
-       <div class="acts">${s.phone ? `<a class="ib" href="tel:${esc(s.phone)}" aria-label="Call">${ICON.phone}</a>` : ''}${adm && s.code !== '00' ? `<button class="sm" onclick="event.stopPropagation();A.paySup('${s.id}')">Pay</button>` : ''}</div></div></div>`;
+       <div class="acts">${s.phone ? `<a class="ib" href="tel:${esc(s.phone)}" aria-label="Call">${ICON.phone}</a>` : ''}${adm && s.code !== '00' ? `<button class="sm" onclick="event.stopPropagation();A.paySup('${s.id}')">Pay</button>` : ''}${adm && s.code !== '00' ? kebab([['Delete supplier', `A.delSupplier('${s.id}')`, true]], 'Supplier actions') : ''}</div></div></div>`;
     }).join('') : empty(ICON.truck, 'No suppliers yet', 'Add the people you buy lots from. Each gets a number used in the sticker codes.')}</div>`;
   },
 
@@ -131,6 +131,11 @@ export const actions = {
     await guard(async () => { await write('edit_payment_note', { p_kind: kind, p_id: id, p_note: v });
       if (!document.querySelector('#sheet .acts3, #sheet [data-partner]')) A.closeModal();   // the laptop pop-up and partner page refresh in place
       await load(); toast('Note saved', 'ok'); A.rerenderPartner?.(); });
+  },
+  async delSupplier(id) {
+    const s = S.supById.get(id); if (!s) return;
+    if (!await confirmBox(`Delete supplier ${esc(s.code)}, ${esc(s.name)}?`, 'Only a supplier with no lots and no payments can be deleted. It goes to More → Recently deleted for 30 days.', 'Delete', 1)) return;
+    await guard(async () => { await write('delete_supplier', { p_supplier_id: id }); await load(); toast(`Supplier ${s.name} deleted`, 'ok'); });
   },
   async delDebt(id) {
     if (!await confirmBox('Delete this debt?', 'It is hidden from Liabilities. Its payments stay in the history.', 'Delete', 1)) return;

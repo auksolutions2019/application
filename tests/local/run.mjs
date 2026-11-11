@@ -23,17 +23,21 @@ const eq = (a, b, name) => ok(String(a) === String(b), name, `(got ${JSON.string
 
 // ---------- setup ----------
 await db.exec(readFileSync(join(here, 'supabase_stub.sql'), 'utf8'));
+// --upgrade-from <file>: first load an older setup_all.sql (e.g. what is live), to prove the new one upgrades it.
+const upIdx = process.argv.indexOf('--upgrade-from');
+if (upIdx > 0) { await db.exec(readFileSync(process.argv[upIdx + 1], 'utf8')); console.log('loaded the older setup first:', process.argv[upIdx + 1]); }
 // --setup: load the single supabase/setup_all.sql (twice, to prove it is safe to re-run); otherwise each migration.
-// --parts: load setup_part1.sql then setup_part2.sql (twice), the split version of the same file.
+// --parts: load setup_part1.sql, 2, 3 in order (twice), the split version of the same file.
 const useParts = process.argv.includes('--parts');
 const useSetup = useParts || process.argv.includes('--setup');
-const sources = useParts ? ['setup_part1.sql', 'setup_part2.sql', 'setup_part1.sql', 'setup_part2.sql']
+const partFiles = readdirSync(join(migDir, '..')).filter(f => /^setup_part\d+\.sql$/.test(f)).sort();
+const sources = useParts ? [...partFiles, ...partFiles]
   : useSetup ? ['setup_all.sql', 'setup_all.sql (second run)'] : readdirSync(migDir).filter(f => f.endsWith('.sql')).sort();
 for (const f of sources) {
   const file = useSetup ? join(migDir, '..', f.split(' ')[0]) : join(migDir, f);
   try {
     const res = await db.exec(readFileSync(file, 'utf8'));
-    if (useSetup && !f.includes('part1')) { const last = res.at(-1).rows[0]; console.log(`loaded ${f}: ${last.tables} tables, ${last.tables_with_rls_on} with RLS on`);
+    if (useSetup && (!useParts || f === partFiles.at(-1))) { const last = res.at(-1).rows[0]; console.log(`loaded ${f}: ${last.tables} tables, ${last.tables_with_rls_on} with RLS on`);
       ok(last.tables === last.tables_with_rls_on && last.tables >= 30, `${f}: every table has RLS on`); }
     else console.log('migrated', f);
   } catch (e) { console.error(`${f} failed: ${e.message}`); process.exit(1); }
@@ -529,6 +533,119 @@ const p1 = pnl.find(x => x.prefix === `01-01-${MM}-${YY}`);
 ok(p1 && p1.status === 'Part sold' && p1.qty === 20, 'Lot P&L shows lot 1 as Part sold', JSON.stringify(p1));
 
 // ---------- backup and restore (run last: restore replaces everything) ----------
+console.log('\nDelete, Recently deleted and Restore');
+const delDsup = await rpc(U.admin, 'add_supplier', { p_name: 'Delete Test Traders' });
+const delDlot = await rpc(U.admin, 'create_lot', { p_supplier_id: delDsup.id, p_lot_no: 1, p_bought_on: today,
+  p_lines: [{ brand: 'HP', processor: 'i5', gen: 8, ram_gb: 8, storage_type: 'SSD', storage_gb: 256, qty: 4, cost: 40000 }] });
+const delD = await Promise.all(delDlot.codes.map(lap));
+const delLineId = delD[0].line_id;
+const delLotCost = async () => (await rpc(U.admin, 'get_snapshot')).lots.find(x => x.id === delDlot.lot_id);
+const delCostOf = async id => +(await one(`select cost from public.laptop_costs where laptop_id = $1`, [id])).cost;
+const delErrMsg = async (u, fn, a) => (await rpcErr(u, fn, a))?.message || '';
+// who may delete
+ok(await rpcErr(U.coadmin, 'delete_laptop', { p_laptop_id: delD[0].id }), 'co-admin cannot delete a laptop');
+ok(await rpcErr(U.staff, 'delete_lot', { p_lot_id: delDlot.lot_id, p_confirm: delDlot.prefix }), 'staff cannot delete a lot');
+// blocked: sold
+await passAll(U.admin, delD[3].id);
+await rpc(U.admin, 'sell_laptop', { p_laptop_id: delD[3].id, p_price: 15000, p_lead_source: 'OLX', p_name: 'Del', p_mobile: '9800000777', p_paid: 15000, p_method: 'Cash' });
+const delChk3 = await rpc(U.admin, 'delete_laptop_check', { p_laptop_id: delD[3].id });
+eq(delChk3.reason, 'This laptop has a sale. Use Undo sale or Return instead.', 'sold laptop: delete refused with the reason');
+ok(/has a sale/.test(await delErrMsg(U.admin, 'delete_laptop', { p_laptop_id: delD[3].id })), 'sold laptop: the database refuses too');
+// blocked: went for service
+const delDpt = await rpc(U.admin, 'save_service_partner', { p_name: 'Delete Partner' });
+await rpc(U.admin, 'give_for_service', { p_laptop_id: delD[2].id, p_partner_id: delDpt.partner_id, p_issues: ['Screen'] });
+ok(/went for service/.test(await delErrMsg(U.admin, 'delete_laptop', { p_laptop_id: delD[2].id })), 'laptop that went for service: refused');
+// allowed: reduce the lot cost
+const delChk0 = await rpc(U.admin, 'delete_laptop_check', { p_laptop_id: delD[0].id });
+ok(delChk0.reason === null && +delChk0.cost === 10000 && delChk0.can_keep === true, 'unsold laptop: allowed, its cost share is ₹10,000', JSON.stringify(delChk0));
+const delBefore = await delLotCost();
+const delDel0 = await rpc(U.admin, 'delete_laptop', { p_laptop_id: delD[0].id, p_lot_cost: 'reduce' });
+const delAfter0 = await delLotCost();
+ok(delAfter0.qty === 3 && +delAfter0.cost === +delBefore.cost - 10000, 'deleted with "reduce": lot shows 3 laptops and ₹10,000 less', JSON.stringify({ b: delBefore.cost, a: delAfter0.cost, q: delAfter0.qty }));
+eq(+(await one(`select line_cost from public.lot_line_costs where line_id = $1`, [delLineId])).line_cost, 30000, 'group cost goes from ₹40,000 to ₹30,000');
+const delSnapD = await rpc(U.admin, 'get_snapshot');
+ok(!delSnapD.laptops.some(l => l.code === delD[0].code) && (await rpc(U.admin, 'get_laptop', { p_code: delD[0].code })) === null, 'deleted laptop is gone from the lists and from scanning');
+ok(!(await rpc(U.admin, 'search_laptops', { p_q: delD[0].code })).length, 'deleted laptop is gone from search');
+ok(await rpcErr(U.admin, 'set_test', { p_laptop_id: delD[0].id, p_test: 'Battery', p_result: 'pass' }), 'a deleted laptop cannot be changed');
+ok(+(await as(U.staff, `select count(*) n from public.laptops where id = $1`, [delD[0].id])).rows[0].n === 0, 'RLS: a deleted laptop cannot be read directly');
+// restore
+const delRd = await rpc(U.admin, 'recently_deleted');
+ok(delRd.some(x => x.id === delDel0.deletion_id && x.kind === 'laptop' && x.by === 'Ayan' && x.days_left === 30), 'Recently deleted lists it, by Ayan, 30 days left');
+ok(await rpcErr(U.coadmin, 'recently_deleted'), 'only the admin sees Recently deleted');
+await rpc(U.admin, 'restore_deleted', { p_deletion_id: delDel0.deletion_id });
+const delBack0 = await delLotCost();
+ok(delBack0.qty === 4 && +delBack0.cost === +delBefore.cost && +(await one(`select line_cost from public.lot_line_costs where line_id = $1`, [delLineId])).line_cost === 40000,
+   'restore brings the laptop and the ₹10,000 back', JSON.stringify({ q: delBack0.qty, c: delBack0.cost }));
+// allowed: keep the lot cost (shared over the other unsold laptops: delD[1] and delD[2]; delD[3] is sold)
+const delDel0b = await rpc(U.admin, 'delete_laptop', { p_laptop_id: delD[0].id, p_lot_cost: 'keep' });
+ok(+(await delLotCost()).cost === +delBefore.cost && await delCostOf(delD[1].id) === 15000 && await delCostOf(delD[2].id) === 15000 && await delCostOf(delD[3].id) === 10000,
+   'deleted with "keep": lot cost unchanged, ₹10,000 moved to the 2 unsold laptops');
+await rpc(U.admin, 'restore_deleted', { p_deletion_id: delDel0b.deletion_id });
+ok(await delCostOf(delD[1].id) === 10000 && await delCostOf(delD[2].id) === 10000 && await delCostOf(delD[0].id) === 10000, 'restore moves the cost back');
+// activity
+const delActD = await rpc(U.admin, 'activity_page', {});
+ok(delActD.some(a => a.message === `Deleted laptop ${delD[0].code}` && a.actor_name === 'Ayan') && delActD.some(a => a.message === `Restored laptop ${delD[0].code}`), 'delete and restore are in Activity with the name');
+// lot: blocked by the sold and serviced laptops
+const delLchk = await rpc(U.admin, 'delete_lot_check', { p_lot_id: delDlot.lot_id });
+ok(delLchk.blockers.length === 2 && delLchk.blockers.some(b => b.code === delD[3].code), 'lot check lists the 2 laptops that block it', JSON.stringify(delLchk.blockers));
+ok(/must stay[\s\S]*has a sale/.test(await delErrMsg(U.admin, 'delete_lot', { p_lot_id: delDlot.lot_id, p_confirm: delDlot.prefix })), 'lot with a sold laptop: refused, naming the laptops');
+// lot: allowed
+const delDlot2 = await rpc(U.admin, 'create_lot', { p_supplier_id: delDsup.id, p_lot_no: 2, p_bought_on: today, p_lines: [{ is_mixed: true, qty: 3, cost: 9000 }] });
+const delLx = await rpc(U.admin, 'add_lot_expense', { p_lot_id: delDlot2.lot_id, p_type: 'Transport', p_count: 1, p_amount: 600, p_method: 'Cash' });
+ok(/Type the lot code/.test(await delErrMsg(U.admin, 'delete_lot', { p_lot_id: delDlot2.lot_id, p_confirm: '01-01' })), 'lot delete needs the lot code typed');
+const delDl2 = await rpc(U.admin, 'delete_lot', { p_lot_id: delDlot2.lot_id, p_confirm: delDlot2.prefix });
+const delSnapL = await rpc(U.admin, 'get_snapshot');
+ok(delDl2.laptops === 3 && !delSnapL.lots.some(x => x.id === delDlot2.lot_id) && !delSnapL.laptops.some(l => l.lot_id === delDlot2.lot_id), 'lot deleted with its 3 laptops; gone from the lists');
+ok(+(await one(`select count(*) n from public.lot_expenses where id = $1 and deleted_at is not null`, [delLx.lot_expense_id])).n === 1, 'its expenses are deleted with it');
+ok(/was deleted/.test(await delErrMsg(U.admin, 'create_lot', { p_supplier_id: delDsup.id, p_lot_no: 2, p_bought_on: today, p_lines: [{ is_mixed: true, qty: 1 }] })),
+   "the deleted lot's sticker numbers are never reused");
+eq(delSnapL.suppliers.find(s => s.id === delDsup.id).max_lot_no, 2, 'next lot number counts the deleted lot');
+const delSv1 = +(await rpc(U.admin, 'get_snapshot')).stock_value.value;
+await rpc(U.admin, 'restore_deleted', { p_deletion_id: delDl2.deletion_id });
+const delSnapR = await rpc(U.admin, 'get_snapshot');
+ok(delSnapR.lots.find(x => x.id === delDlot2.lot_id)?.qty === 3 && delSnapR.lots.find(x => x.id === delDlot2.lot_id).expenses.length === 1 && +delSnapR.stock_value.value > delSv1,
+   'restore brings the lot, its laptops and expenses back (stock value too)');
+// supplier and partner
+ok(/has 2 lots/.test(await delErrMsg(U.admin, 'delete_supplier', { p_supplier_id: delDsup.id })), 'supplier with lots: refused');
+const delEsup = await rpc(U.admin, 'add_supplier', { p_name: 'Empty Supplier' });
+await rpc(U.admin, 'delete_supplier', { p_supplier_id: delEsup.id });
+ok(!(await rpc(U.admin, 'get_snapshot')).suppliers.some(s => s.id === delEsup.id), 'supplier without lots or payments: deleted');
+ok(/was deleted/.test(await delErrMsg(U.admin, 'create_lot', { p_supplier_id: delEsup.id, p_lot_no: 1, p_bought_on: today, p_lines: [{ is_mixed: true, qty: 1 }] })), 'no new lot for a deleted supplier');
+ok(/service jobs/.test(await delErrMsg(U.admin, 'delete_service_partner', { p_partner_id: delDpt.partner_id })), 'partner with service jobs: refused');
+const delEpt = await rpc(U.admin, 'save_service_partner', { p_name: 'Never Used' });
+await rpc(U.admin, 'delete_service_partner', { p_partner_id: delEpt.partner_id });
+ok(!(await rpc(U.admin, 'get_snapshot')).partners.some(p => p.id === delEpt.partner_id), 'partner without jobs: deleted');
+ok(/was deleted/.test(await delErrMsg(U.admin, 'give_for_service', { p_laptop_id: delD[1].id, p_partner_id: delEpt.partner_id, p_issues: ['Screen'] })), 'a deleted partner cannot get laptops');
+// photos
+await rpc(U.coadmin, 'add_photo', { p_laptop_id: delD[1].id, p_url: 'https://res.cloudinary.com/demo/image/upload/v1/fcl/a.jpg' });
+await rpc(U.coadmin, 'add_photo', { p_laptop_id: delD[1].id, p_url: 'https://res.cloudinary.com/demo/image/upload/v1/fcl/b.jpg' });
+const delPh = await rpc(U.admin, 'get_laptop', { p_code: delD[1].code });
+ok(delPh.photo_ids.length === 2 && delPh.photos.length === 2, 'laptop has 2 photos with their ids');
+ok(await rpcErr(U.staff, 'delete_photo', { p_photo_id: delPh.photo_ids[0] }), 'staff cannot delete a photo');
+const delPd = await rpc(U.coadmin, 'delete_photo', { p_photo_id: delPh.photo_ids[0] });
+ok(delPd.url.endsWith('/a.jpg') && (await rpc(U.admin, 'get_laptop', { p_code: delD[1].code })).photos.length === 1, 'co-admin deletes a photo: gone from the app');
+ok(await rpcErr(U.coadmin, 'photo_cloud_result', { p_deletion_id: delPd.deletion_id, p_status: 'deleted' }), 'only the Edge Function can record the Cloudinary result');
+await db.query(`select public.photo_cloud_result($1, 'failed', 'Invalid signature')`, [delPd.deletion_id]);
+ok((await rpc(U.admin, 'activity_page', {})).some(a => /Cloudinary copy could not be deleted/.test(a.message)), 'a failed Cloudinary delete is logged');
+await rpc(U.admin, 'restore_deleted', { p_deletion_id: delPd.deletion_id });
+eq((await rpc(U.admin, 'get_laptop', { p_code: delD[1].code })).photos.length, 2, 'photo still on Cloudinary: it can be restored');
+const delPd2 = await rpc(U.admin, 'delete_photo', { p_photo_id: delPh.photo_ids[1] });
+await db.query(`select public.photo_cloud_result($1, 'deleted', '')`, [delPd2.deletion_id]);
+ok((await rpc(U.admin, 'recently_deleted')).find(x => x.id === delPd2.deletion_id)?.can_restore === false
+   && /removed from Cloudinary/.test(await delErrMsg(U.admin, 'restore_deleted', { p_deletion_id: delPd2.deletion_id })), 'photo removed from Cloudinary: no restore');
+// payments are never deleted
+const delSp3 = await one(`select id from public.sale_payments order by created_at limit 1`);
+ok(await db.query(`delete from public.sale_payments where id = $1`, [delSp3.id]).then(() => false, () => true), 'payments can never be deleted');
+// 30-day cleanup, run by the daily keep-alive ping
+const delOldDel = await rpc(U.admin, 'delete_supplier', { p_supplier_id: (await rpc(U.admin, 'add_supplier', { p_name: 'Old One' })).id });
+await db.query(`update private.deletions set deleted_at = now() - interval '31 days' where id in ($1, $2)`, [delOldDel.deletion_id, delPd2.deletion_id]);
+let delPingOk = true;
+try { await db.exec(`set role anon; select public.ping();`); } catch (e) { delPingOk = e.message; } finally { await db.exec('reset role'); }
+ok(delPingOk === true, 'the daily ping runs the cleanup', delPingOk);
+ok(!(await rpc(U.admin, 'recently_deleted')).some(x => x.id === delOldDel.deletion_id) && /gone for good/.test(await delErrMsg(U.admin, 'restore_deleted', { p_deletion_id: delOldDel.deletion_id })),
+   'after 30 days: gone from Recently deleted, cannot be restored');
+eq(+(await one(`select count(*) n from public.photos where id = $1`, [delPh.photo_ids[1]])).n, 0, 'after 30 days the photo row is removed');
+
 console.log('\nBackup and restore');
 ok(await rpcErr(U.coadmin, 'export_backup'), 'only the admin can download a backup');
 const counts = async () => (await one(`select (select count(*) from public.laptops) l, (select count(*) from public.sales) s,
@@ -541,6 +658,8 @@ ok(await rpcErr(U.coadmin, 'restore_backup', { p_data: backup, p_confirm: 'RESTO
 await rpc(U.admin, 'restore_backup', { p_data: backup, p_confirm: 'RESTORE' });
 eq(JSON.stringify(await counts()), JSON.stringify(before), 'restore brings back the same laptops, sales, payments, service jobs and repairs');
 eq((await rpc(U.admin, 'get_laptop', { p_code: L7.code })).sale.profit, 8150, 'profit after restore is still ₹8,150');
+ok((await rpc(U.admin, 'recently_deleted')).some(x => x.label === 'Supplier ' + delEsup.code + ', Empty Supplier'), 'Recently deleted survives a backup and restore');
+ok(!(await rpc(U.admin, 'get_snapshot')).suppliers.some(x => x.id === delEsup.id), 'deleted items stay hidden after a restore');
 ok(await rpcErr(U.admin, 'import_backup', { p_data: { suppliers: [], laptops: [] } }), 'old-app import refuses a database that has data');
 // an old prototype backup
 const proto = {

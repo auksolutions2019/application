@@ -422,3 +422,28 @@ button.createlot:disabled{background:#B9C3D4;cursor:default}
 .photomsg{margin-top:10px;border-radius:12px;padding:11px 13px;font-size:14px;font-weight:600;line-height:1.5}
 .photomsg.ok{background:#E2F5EC;color:#0B7A53}.photomsg.bad{background:#FDE8E7;color:#B42D25}
 .photomsg .tag{margin:0 4px}
+
+/* ⋮ menu: rare actions such as Delete, never a big main button */
+.kebab{position:relative;display:inline-flex;flex:none}
+.kebab .kbtn{width:40px;height:40px;padding:0;font-size:20px;font-weight:800;line-height:1}
+.kmenu{position:absolute;right:0;top:44px;z-index:30;min-width:200px;background:#fff;border-radius:14px;box-shadow:0 12px 32px -8px rgba(14,33,71,.35),0 0 0 1px var(--line);padding:6px;display:flex;flex-direction:column}
+.kmenu button{background:transparent;color:var(--ink);justify-content:flex-start;padding:12px 14px;min-height:44px;border-radius:10px;font-weight:600;text-align:left;white-space:nowrap}
+.kmenu button:hover,.kmenu button:focus-visible{background:var(--ice)}
+.kmenu button.kred{color:var(--red)}
+.ldtop{display:flex;justify-content:flex-end;margin:-4px 0 4px}
+.crow .acts .kebab .kbtn{width:36px;height:36px}
+
+/* photos: Edit photos shows a small ✕; a tap opens the full photo with Delete */
+.phhead{display:flex;justify-content:flex-end;margin-top:12px;font-size:13.5px}
+.phhead + .photos{margin-top:6px}
+.photos .ph{position:relative;flex:none;cursor:pointer}
+.photos .phx{position:absolute;top:4px;right:4px;width:26px;height:26px;padding:0;border-radius:50%;background:var(--red);color:#fff;font-size:13px;box-shadow:0 2px 6px rgba(0,0,0,.3)}
+.photos.editing img{opacity:.85}
+.phview{position:fixed;inset:0;z-index:45;background:rgba(8,16,34,.94);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:16px}
+.phview img{max-width:100%;max-height:calc(100vh - 110px);border-radius:12px;object-fit:contain}
+.phbar{position:absolute;top:0;left:0;right:0;display:flex;align-items:center;gap:8px;padding:12px 14px;color:#fff;font-weight:600}
+.phbar span{flex:1}
+.phbar .red-t{color:var(--red)}
+.dbox .blk{max-height:260px;overflow:auto;margin-top:6px}
+.hbtns{display:flex;flex-direction:column-reverse;align-items:flex-end;gap:6px;flex:none}
+.dbox .chips button{white-space:normal;text-align:left;line-height:1.3}

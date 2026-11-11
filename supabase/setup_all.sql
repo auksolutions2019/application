@@ -5,7 +5,7 @@
 -- Paste the whole file into the Supabase SQL Editor on a new project and click Run.
 -- It is safe to run again: every step checks first.
 -- The last result shows how many tables were made and how many have access rules on.
--- If the SQL Editor says the query is too big, run setup_part1.sql and then setup_part2.sql instead.
+-- If the SQL Editor says the query is too big, run setup_part1.sql, setup_part2.sql and setup_part3.sql instead.
 -- =====================================================================
 
 
@@ -1676,13 +1676,16 @@ begin
   if p_bought_on > private.today() then raise exception 'The purchase date cannot be in the future'; end if;
   if p_kind not in ('purchase','opening') then raise exception 'Lot type must be purchase or opening stock'; end if;
   if jsonb_typeof(p_lines) is distinct from 'array' or jsonb_array_length(p_lines) = 0 then
-    raise exception 'Add at least one line';
+    raise exception 'Add at least one laptop';
   end if;
-  if jsonb_array_length(p_lines) > 99 then raise exception 'A lot can have up to 99 lines'; end if;
+  if jsonb_array_length(p_lines) > 99 then raise exception 'A lot can have up to 99 kinds of laptops'; end if;
   select coalesce(sum((x ->> 'qty')::int), 0) into v_total from jsonb_array_elements(p_lines) x;
   if v_total > 500 then raise exception 'A lot can have up to 500 laptops'; end if;
 
   v_prefix := s.code || '-' || lpad(p_lot_no::text, 2, '0') || '-' || to_char(p_bought_on, 'MM') || '-' || to_char(p_bought_on, 'YY');
+  if exists (select 1 from public.lots where prefix = v_prefix and deleted_at is not null) then
+    raise exception 'Lot % was deleted, so its sticker numbers cannot be used again. Use the next lot number.', v_prefix;
+  end if;
   if exists (select 1 from public.lots where prefix = v_prefix) then
     raise exception 'Lot % already exists. Change the lot number.', v_prefix;
   end if;
@@ -1695,9 +1698,9 @@ begin
   for ln in select * from jsonb_array_elements(p_lines) loop
     i := i + 1;
     v_qty := (ln ->> 'qty')::int;
-    if v_qty is null or v_qty < 1 then raise exception 'Line %: enter the number of laptops', i; end if;
+    if v_qty is null or v_qty < 1 then raise exception 'Laptops %: enter how many', i; end if;
     v_cost := (ln ->> 'cost')::numeric;
-    if v_cost is not null and (v_cost < 0 or v_cost <> round(v_cost, 2)) then raise exception 'Line %: check the cost', i; end if;
+    if v_cost is not null and (v_cost < 0 or v_cost <> round(v_cost, 2)) then raise exception 'Laptops %: check the cost', i; end if;
     v_mixed := coalesce((ln ->> 'is_mixed')::boolean, false);
 
     insert into public.lot_lines (lot_id, line_no, is_mixed, brand, brand_other, model, processor, processor_other,
@@ -1741,7 +1744,7 @@ declare ln public.lot_lines; lo public.lots;
 begin
   perform private.require_admin();
   select * into ln from public.lot_lines where id = p_line_id for update;
-  if not found then raise exception 'Lot line not found'; end if;
+  if not found then raise exception 'These laptops are not in the lot'; end if;
   select * into lo from public.lots where id = ln.lot_id;
   if lo.kind = 'exchange' then raise exception 'Exchange laptops get their cost from the exchange value'; end if;
   if p_cost is not null and (p_cost < 0 or p_cost <> round(p_cost, 2)) then raise exception 'Check the cost'; end if;
@@ -1768,7 +1771,7 @@ begin
   perform 1 from public.lots where id = p_lot_id;
   if not found then raise exception 'Lot not found'; end if;
   if p_line_id is not null and not exists (select 1 from public.lot_lines where id = p_line_id and lot_id = p_lot_id) then
-    raise exception 'That line is not in this lot';
+    raise exception 'Those laptops are not in this lot';
   end if;
   if p_type is null or p_type not in ('SSD','RAM','Battery','Charger','HDD','Keyboard','Screen','Transport','Repair labour','Other') then
     raise exception 'Choose the expense type';
@@ -1844,7 +1847,7 @@ begin
   if p_lot_expense_id is not null then
     select * into e from public.lot_expenses where id = p_lot_expense_id and deleted_at is null for update;
     if not found or e.lot_id <> l.lot_id or (e.line_id is not null and e.line_id <> l.line_id) then
-      raise exception 'Those parts were bought for another lot or line';
+      raise exception 'Those parts were bought for other laptops';
     end if;
     select * into f from private.fitted(e.id);
     if f.units >= e.count then raise exception 'No % left from that purchase', e.type; end if;
@@ -2704,6 +2707,128 @@ language sql stable security definer set search_path = '' as $$
 $$;
 
 -- ---------------------------------------------------------------------
+-- 0005a_soft_delete.sql
+-- ---------------------------------------------------------------------
+-- 0005a: soft delete for laptops, lots, suppliers, service partners and photos.
+-- A deleted row stays in its table with deleted_at / deleted_by, so its sticker code is never reused,
+-- and it can be restored for 30 days (More → Recently deleted). Every screen reads through the
+-- private.live_* views below, so deleted rows disappear from lists, counts, reports and stock value.
+-- Safe to run twice.
+
+do $$
+declare t text;
+begin
+  foreach t in array array['laptops','lots','suppliers','service_partners','photos'] loop
+    execute format('alter table public.%I add column if not exists deleted_at timestamptz', t);
+    execute format('alter table public.%I add column if not exists deleted_by uuid references public.profiles(id)', t);
+  end loop;
+end $$;
+
+-- Rows that are not deleted. Used by every read in 0006 and by the delete rules in 0010.
+create or replace view private.live_laptops  as select * from public.laptops  where deleted_at is null;
+create or replace view private.live_lots     as select * from public.lots     where deleted_at is null;
+create or replace view private.live_suppliers as select * from public.suppliers where deleted_at is null;
+create or replace view private.live_partners as select * from public.service_partners where deleted_at is null;
+create or replace view private.live_photos   as select * from public.photos   where deleted_at is null;
+
+-- One row per delete, for Recently deleted, Restore and the 30-day cleanup.
+-- details: what else went with it (a lot's laptops and expenses) and any cost moved, so Restore can undo it exactly.
+create table if not exists private.deletions (
+  id           uuid primary key default gen_random_uuid(),
+  kind         text not null check (kind in ('laptop','lot','supplier','partner','photo')),
+  item_id      uuid not null,
+  label        text not null default '',
+  details      jsonb not null default '{}',
+  deleted_at   timestamptz not null default now(),
+  deleted_by   uuid references public.profiles(id),
+  cloud_status text check (cloud_status in ('pending','deleted','failed','skipped')),   -- photos: the Cloudinary copy
+  restored_at  timestamptz,
+  restored_by  uuid references public.profiles(id),
+  purged_at    timestamptz
+);
+create index if not exists deletions_open_idx on private.deletions (deleted_at) where restored_at is null and purged_at is null;
+
+-- ---------- guards: a deleted row cannot be used or changed (only restored) ----------
+-- Changing a deleted row is refused, except restoring it (deleted_at back to null) and the 30-day cleanup.
+create or replace function private.guard_deleted_row() returns trigger
+language plpgsql set search_path = '' as $$
+begin
+  if old.deleted_at is not null and new.deleted_at is not null and coalesce(current_setting('app.purging', true), '') <> 'on' then
+    raise exception 'This was deleted. Restore it first from More → Recently deleted.';
+  end if;
+  return new;
+end $$;
+
+-- New sales, bookings, service trips, repairs, photos and tests cannot point at a deleted laptop.
+create or replace function private.guard_live_laptop() returns trigger
+language plpgsql set search_path = '' as $$
+begin
+  if current_setting('app.no_log', true) = 'on' then return new; end if;   -- loading a backup
+  if exists (select 1 from public.laptops where id = new.laptop_id and deleted_at is not null) then
+    raise exception 'This laptop was deleted. Restore it first from More → Recently deleted.';
+  end if;
+  return new;
+end $$;
+
+create or replace function private.guard_live_partner() returns trigger
+language plpgsql set search_path = '' as $$
+begin
+  if current_setting('app.no_log', true) = 'on' then return new; end if;   -- loading a backup
+  if exists (select 1 from public.service_partners where id = new.partner_id and deleted_at is not null) then
+    raise exception 'This service partner was deleted.';
+  end if;
+  return new;
+end $$;
+
+-- A new lot cannot use a deleted supplier, or the lot number of a deleted lot (its stickers are never reused).
+create or replace function private.guard_new_lot() returns trigger
+language plpgsql set search_path = '' as $$
+begin
+  if current_setting('app.no_log', true) = 'on' then return new; end if;   -- loading a backup
+  if exists (select 1 from public.suppliers where id = new.supplier_id and deleted_at is not null) then
+    raise exception 'This supplier was deleted.';
+  end if;
+  if exists (select 1 from public.lots where prefix = new.prefix and deleted_at is not null) then
+    raise exception 'Lot % was deleted, so its sticker numbers cannot be used again. Use the next lot number.', new.prefix;
+  end if;
+  return new;
+end $$;
+
+do $$
+declare t text;
+begin
+  foreach t in array array['laptops','lots','suppliers','service_partners','photos'] loop
+    execute format('drop trigger if exists guard_deleted on public.%I', t);
+    execute format('create trigger guard_deleted before update on public.%I for each row execute function private.guard_deleted_row()', t);
+  end loop;
+  foreach t in array array['sales','bookings','service_jobs','repairs','photos','laptop_tests','returns'] loop
+    execute format('drop trigger if exists guard_live_laptop on public.%I', t);
+    execute format('create trigger guard_live_laptop before insert on public.%I for each row execute function private.guard_live_laptop()', t);
+  end loop;
+end $$;
+drop trigger if exists guard_live_partner on public.service_jobs;
+create trigger guard_live_partner before insert on public.service_jobs for each row execute function private.guard_live_partner();
+drop trigger if exists guard_live_partner on public.service_payments;
+create trigger guard_live_partner before insert on public.service_payments for each row execute function private.guard_live_partner();
+drop trigger if exists guard_new_lot on public.lots;
+create trigger guard_new_lot before insert on public.lots for each row execute function private.guard_new_lot();
+
+-- ---------- row level security: deleted rows are not readable or editable directly ----------
+do $$
+declare t text;
+begin
+  foreach t in array array['laptops','lots','photos','service_partners'] loop
+    execute format('drop policy if exists user_read on public.%I', t);
+    execute format('create policy user_read on public.%I for select to authenticated using (private.is_user() and deleted_at is null)', t);
+  end loop;
+end $$;
+drop policy if exists manager_read on public.suppliers;
+create policy manager_read on public.suppliers for select to authenticated using (private.is_manager() and deleted_at is null);
+drop policy if exists staff_edit on public.laptops;
+create policy staff_edit on public.laptops for update to authenticated
+  using (private.is_user() and deleted_at is null) with check (private.is_user() and deleted_at is null);
+
+-- ---------------------------------------------------------------------
 -- 0006_reads.sql
 -- ---------------------------------------------------------------------
 -- 0006: read functions. Each returns only what the caller's role may see.
@@ -2771,7 +2896,8 @@ language sql stable set search_path = '' as $$
                                                              'from_lot_stock', r.lot_expense_id is not null)
                                           order by r.done_on, r.created_at)
                          from public.repairs r where r.laptop_id = l.id and r.deleted_at is null), '[]'),
-    'photos', coalesce((select jsonb_agg(p.url order by p.created_at) from public.photos p where p.laptop_id = l.id), '[]'),
+    'photos', coalesce((select jsonb_agg(p.url order by p.created_at) from private.live_photos p where p.laptop_id = l.id), '[]'),
+    'photo_ids', coalesce((select jsonb_agg(p.id order by p.created_at) from private.live_photos p where p.laptop_id = l.id), '[]'),
     'sale', (select private.sale_json(s.id, p_role) from public.sales s where s.laptop_id = l.id and s.status = 'active'),
     'booking', (select private.booking_json(b.id) from public.bookings b where b.laptop_id = l.id and b.status = 'open'),
     'returns', coalesce((select jsonb_agg(jsonb_build_object(
@@ -2790,14 +2916,15 @@ language sql stable set search_path = '' as $$
                                          and j.status = 'returned' and not exists (select 1 from public.service_charges c where c.job_id = j.id)),
        'full_cost', round(private.full_cost(l.id), 2))
      else '{}'::jsonb end
-  from public.laptops l where l.id = p_id
+  from private.live_laptops l where l.id = p_id
 $$;
 
 create or replace function private.line_json(p_line uuid, p_role text) returns jsonb
 language sql stable set search_path = '' as $$
   select jsonb_build_object('id', ln.id, 'line_no', ln.line_no, 'is_mixed', ln.is_mixed, 'brand', ln.brand,
     'brand_other', ln.brand_other, 'model', ln.model, 'processor', ln.processor, 'processor_other', ln.processor_other,
-    'gen', ln.gen, 'ram_gb', ln.ram_gb, 'storage_type', ln.storage_type, 'storage_gb', ln.storage_gb, 'qty', ln.qty,
+    'gen', ln.gen, 'ram_gb', ln.ram_gb, 'storage_type', ln.storage_type, 'storage_gb', ln.storage_gb,
+    'qty', (select count(*) from private.live_laptops x where x.line_id = ln.id),   -- deleted laptops are not counted
     'label', case when ln.is_mixed then 'Mixed'
                   else coalesce(nullif(concat_ws(' ', nullif(private.shorthand(ln.brand, ln.brand_other, ln.processor, ln.processor_other,
                                 ln.gen, ln.ram_gb, ln.storage_type, ln.storage_gb), ''), nullif(ln.model, '')), ''), 'Line ' || ln.line_no) end)
@@ -2821,19 +2948,20 @@ language sql stable set search_path = '' as $$
     'supplier_name', case when p_role = 'staff' then null else s.name end,
     'lot_no', lo.lot_no, 'month', lo.month, 'year', lo.year, 'prefix', lo.prefix, 'kind', lo.kind,
     'bought_on', lo.bought_on, 'note', lo.note,
-    'qty', (select count(*) from public.laptops where lot_id = lo.id),
-    'sold', (select count(*) from public.laptops x where x.lot_id = lo.id and private.is_sold(x.id)),
+    'qty', (select count(*) from private.live_laptops where lot_id = lo.id),
+    'sold', (select count(*) from private.live_laptops x where x.lot_id = lo.id and private.is_sold(x.id)),
     'lines', coalesce((select jsonb_agg(private.line_json(ln.id, p_role) order by ln.line_no)
-                       from public.lot_lines ln where ln.lot_id = lo.id), '[]'),
+                       from public.lot_lines ln where ln.lot_id = lo.id
+                         and exists (select 1 from private.live_laptops x where x.line_id = ln.id)), '[]'),
     'expenses', case when p_role = 'staff' then '[]'::jsonb else
                 coalesce((select jsonb_agg(private.lot_expense_json(e.id) order by e.spent_on, e.created_at)
                           from public.lot_expenses e where e.lot_id = lo.id and e.deleted_at is null), '[]') end)
   || case when p_role = 'admin' then jsonb_build_object(
-       'cost', (select sum(c.cost) from public.laptop_costs c join public.laptops l on l.id = c.laptop_id where l.lot_id = lo.id),
-       'cost_missing', (select count(*) from public.laptops l where l.lot_id = lo.id
+       'cost', (select sum(c.cost) from public.laptop_costs c join private.live_laptops l on l.id = c.laptop_id where l.lot_id = lo.id),
+       'cost_missing', (select count(*) from private.live_laptops l where l.lot_id = lo.id
                         and not exists (select 1 from public.laptop_costs c where c.laptop_id = l.id)))
      else '{}'::jsonb end
-  from public.lots lo join public.suppliers s on s.id = lo.supplier_id
+  from private.live_lots lo join private.live_suppliers s on s.id = lo.supplier_id
   where lo.id = p_lot
 $$;
 
@@ -2843,28 +2971,30 @@ language sql stable set search_path = '' as $$
     select l.id, (select count(*) from public.repairs r where r.laptop_id = l.id and r.deleted_at is null) > 0 repaired,
            private.repairs_of(l.id) rep,
            (select private.profit(sa.id) from public.sales sa where sa.laptop_id = l.id and sa.status = 'active') profit
-    from public.laptops l join public.lots lo on lo.id = l.lot_id where lo.supplier_id = p_sup
+    from private.live_laptops l join private.live_lots lo on lo.id = l.lot_id where lo.supplier_id = p_sup
   )
   select jsonb_build_object('id', s.id, 'code', s.code, 'name', s.name, 'phone', s.phone,
-    'lots', (select count(*) from public.lots where supplier_id = s.id),
+    'lots', (select count(*) from private.live_lots where supplier_id = s.id),
+    -- highest lot number ever used, deleted lots included (their sticker numbers are never reused)
+    'max_lot_no', (select coalesce(max(lot_no), 0) from public.lots where supplier_id = s.id),
     'quality', (select case when count(*) = 0 then null else jsonb_build_object(
                   'n', count(*),
                   'pct_rep', round(100.0 * count(*) filter (where repaired) / count(*)),
                   'avg_rep', round(sum(rep) / count(*), 2),
                   'avg_profit', case when p_role = 'admin' then round(avg(profit), 2) end) end from ls))
   || case when p_role = 'admin' then jsonb_build_object(
-       'bought', coalesce((select sum(c.cost) from public.laptop_costs c join public.laptops l on l.id = c.laptop_id
-                           join public.lots lo on lo.id = l.lot_id where lo.supplier_id = s.id), 0),
+       'bought', coalesce((select sum(c.cost) from public.laptop_costs c join private.live_laptops l on l.id = c.laptop_id
+                           join private.live_lots lo on lo.id = l.lot_id where lo.supplier_id = s.id), 0),
        'paid', case when s.code = '00' then null else
                coalesce((select sum(amount) from public.supplier_payments where supplier_id = s.id), 0) end,
        'due', private.supplier_due(s.id),
        'payments', coalesce((select jsonb_agg(jsonb_build_object('id', sp.id, 'paid_on', sp.paid_on, 'amount', sp.amount, 'method', sp.method,
                                                  'ref', sp.ref, 'note', sp.note) order by sp.paid_on desc, sp.created_at desc)
                              from (select * from public.supplier_payments where supplier_id = s.id order by paid_on desc, created_at desc limit 30) sp), '[]'),
-       'cost_missing', (select count(*) from public.laptops l join public.lots lo on lo.id = l.lot_id
+       'cost_missing', (select count(*) from private.live_laptops l join private.live_lots lo on lo.id = l.lot_id
                         where lo.supplier_id = s.id and not exists (select 1 from public.laptop_costs c where c.laptop_id = l.id)))
      else '{}'::jsonb end
-  from public.suppliers s where s.id = p_sup
+  from private.live_suppliers s where s.id = p_sup
 $$;
 
 -- Sold more than 12 months ago and fully paid: left out of the snapshot (fetched on demand).
@@ -2885,11 +3015,11 @@ begin
     'today', private.today(),
     'settings', (select to_jsonb(s) - 'id' - 'created_at' - 'updated_at' - 'updated_by' from public.settings s),
     'suppliers', case when r = 'staff' then '[]'::jsonb else
-                 coalesce((select jsonb_agg(private.supplier_json(s.id, r) order by s.code) from public.suppliers s), '[]') end,
-    'lots', coalesce((select jsonb_agg(private.lot_json(lo.id, r) order by lo.bought_on, lo.created_at) from public.lots lo), '[]'),
+                 coalesce((select jsonb_agg(private.supplier_json(s.id, r) order by s.code) from private.live_suppliers s), '[]') end,
+    'lots', coalesce((select jsonb_agg(private.lot_json(lo.id, r) order by lo.bought_on, lo.created_at) from private.live_lots lo), '[]'),
     'laptops', coalesce((select jsonb_agg(private.laptop_json(l.id, r) order by l.created_at, l.code)
-                         from public.laptops l where not private.is_old_sold(l.id)), '[]'),
-    'hidden_sold', (select count(*) from public.laptops l where private.is_old_sold(l.id)),
+                         from private.live_laptops l where not private.is_old_sold(l.id)), '[]'),
+    'hidden_sold', (select count(*) from private.live_laptops l where private.is_old_sold(l.id)),
     'prices', coalesce((select jsonb_object_agg(shorthand, price) from public.model_prices), '{}'),
     'debts', case when r <> 'admin' then '[]'::jsonb else
              coalesce((select jsonb_agg(jsonb_build_object('id', d.id, 'name', d.name, 'type', d.type, 'amount', d.amount,
@@ -2906,17 +3036,17 @@ begin
                                  'cancelled_on', b.cancelled_on,
                                  'advance', (select sum(amount) from public.booking_payments where booking_id = b.id))
                                order by b.cancelled_on)
-                               from public.bookings b join public.laptops l on l.id = b.laptop_id
+                               from public.bookings b join private.live_laptops l on l.id = b.laptop_id
                                join public.customers c on c.id = b.customer_id
                                where b.advance_status = 'held'), '[]') end,
     'partners', coalesce((select jsonb_agg(private.partner_json(p.id, r) order by p.active desc, private.partner_label(p.id))
-                          from public.service_partners p), '[]'),
+                          from private.live_partners p), '[]'),
     'service_owed', case when r <> 'admin' then null else
-                    (select coalesce(sum(greatest(private.partner_owed(p.id), 0)), 0) from public.service_partners p) end,
+                    (select coalesce(sum(greatest(private.partner_owed(p.id), 0)), 0) from private.live_partners p) end,
     'stock_value', case when r <> 'admin' then null else
                    (select jsonb_build_object('value', round(coalesce(sum(private.full_cost(l.id)), 0), 2),
                                               'cost_missing', count(*) filter (where private.cost_of(l.id) is null))
-                    from public.laptops l where not private.is_sold(l.id)) end,
+                    from private.live_laptops l where not private.is_sold(l.id)) end,
     'activity', case when r = 'staff' then '[]'::jsonb else
                 coalesce((select jsonb_agg(to_jsonb(a) order by a.id desc)
                           from (select id, at, actor_name, actor_role, message from public.activity_log
@@ -2933,7 +3063,7 @@ begin
   if c !~ '-' and length(d) = 11 then
     c := substr(d, 1, 2) || '-' || substr(d, 3, 2) || '-' || substr(d, 5, 2) || '-' || substr(d, 7, 2) || '-' || substr(d, 9, 3);
   end if;
-  return (select private.laptop_json(l.id, r) from public.laptops l where l.code = c);
+  return (select private.laptop_json(l.id, r) from private.live_laptops l where l.code = c);
 end $$;
 
 create or replace function public.search_laptops(p_q text, p_limit int default 60)
@@ -2944,7 +3074,7 @@ begin
   d := regexp_replace(q, '\D', '', 'g');
   return coalesce((
     select jsonb_agg(private.laptop_json(x.id, r))
-    from (select l.id from public.laptops l
+    from (select l.id from private.live_laptops l
           left join public.sales s on s.laptop_id = l.id and s.status = 'active'
           left join public.customers c on c.id = s.customer_id
           where position(q in lower(l.code)) > 0
@@ -2963,7 +3093,7 @@ returns jsonb language plpgsql stable security definer set search_path = '' as $
 declare r text := private.require_user();
 begin
   return coalesce((select jsonb_agg(private.laptop_json(l.id, r) order by l.piece_no)
-                   from public.laptops l where l.lot_id = p_lot_id), '[]');
+                   from private.live_laptops l where l.lot_id = p_lot_id), '[]');
 end $$;
 
 create or replace function public.old_sold_laptops(p_offset int default 0, p_limit int default 100)
@@ -3005,7 +3135,7 @@ begin
              (array_agg(l.code order by s.sold_on desc))[1:4] codes
       from public.customers c
       join public.sales s on s.customer_id = c.id and s.status = 'active'
-      join public.laptops l on l.id = s.laptop_id
+      join private.live_laptops l on l.id = s.laptop_id
       group by c.id) x), '[]');
 end $$;
 
@@ -3017,19 +3147,19 @@ begin
   return jsonb_build_object('date', p_date,
     'ins', coalesce((select jsonb_agg(x) from (
         select p.amount amt, p.method m, private.cust_label(s.customer_name, s.lead_source) || ', ' || l.code t, p.note n, p.id id, 'sale_payment' k
-        from public.sale_payments p join public.sales s on s.id = p.sale_id join public.laptops l on l.id = s.laptop_id
+        from public.sale_payments p join public.sales s on s.id = p.sale_id join private.live_laptops l on l.id = s.laptop_id
         where p.paid_on = p_date and p.reversal_of is null and p.booking_payment_id is null and s.status <> 'voided'
         union all
         select bp.amount, bp.method, private.cust_label(b.customer_name, b.lead_source) || ' (advance), ' || l.code, bp.note, bp.id, 'booking_payment'
-        from public.booking_payments bp join public.bookings b on b.id = bp.booking_id join public.laptops l on l.id = b.laptop_id
+        from public.booking_payments bp join public.bookings b on b.id = bp.booking_id join private.live_laptops l on l.id = b.laptop_id
         where bp.paid_on = p_date) x), '[]'),
     'outs', coalesce((select jsonb_agg(x) from (
         select r.amount amt, 'Cash' m, 'Repair on ' || l.code || ': ' || r.work t, '' n, null::uuid id, null k
-        from public.repairs r join public.laptops l on l.id = r.laptop_id
+        from public.repairs r join private.live_laptops l on l.id = r.laptop_id
         where r.done_on = p_date and r.deleted_at is null and r.lot_expense_id is null
         union all
         select e.amount, e.method, 'Parts for lot ' || lo.prefix || ': ' || e.count || ' x ' || e.type, e.note, e.id, 'lot_expense'
-        from public.lot_expenses e join public.lots lo on lo.id = e.lot_id
+        from public.lot_expenses e join private.live_lots lo on lo.id = e.lot_id
         where e.spent_on = p_date and e.deleted_at is null
         union all
         -- supplier, Liabilities, shop and service payments: in full for admin; one combined line per method for co-admin
@@ -3037,7 +3167,7 @@ begin
                case when adm then max(b.n) else '' end, case when adm then b.k end, case when adm then max(b.kind) end
         from (
           select sp.amount amt, sp.method m, 'Supplier ' || s.name t, sp.note n, sp.id k, 'supplier_payment' kind
-          from public.supplier_payments sp join public.suppliers s on s.id = sp.supplier_id where sp.paid_on = p_date
+          from public.supplier_payments sp join private.live_suppliers s on s.id = sp.supplier_id where sp.paid_on = p_date
           union all
           select dp.amount, dp.method, d.name, dp.note, dp.id, 'debt_payment'
           from public.debt_payments dp join public.debts d on d.id = dp.debt_id where dp.paid_on = p_date
@@ -3108,7 +3238,7 @@ begin
       'year', p_year,
       'years', (select jsonb_agg(y order by y desc) from (
                   select extract(year from private.today())::int y
-                  union select distinct year from public.lots
+                  union select distinct year from private.live_lots
                   union select distinct extract(year from sold_on)::int from public.sales where status = 'active') ys),
       'months', (select jsonb_agg(jsonb_build_object('m', m, 'n', n, 'sales', sales)
                    -- stock service charges are already inside gross (laptop cost); warranty repairs come off net
@@ -3121,11 +3251,11 @@ begin
       'collected', (select coalesce(sum(paid), 0) from sold),
       'pending', (select coalesce(sum(price - paid), 0) from sold),
       'batches', coalesce((select jsonb_agg(jsonb_build_object('prefix', lo.prefix,
-                    'qty', (select count(*) from public.laptops where lot_id = lo.id),
-                    'sold', (select count(*) from public.laptops x where x.lot_id = lo.id and private.is_sold(x.id)),
-                    'sales', (select coalesce(sum(s.price), 0) from public.sales s join public.laptops l on l.id = s.laptop_id
+                    'qty', (select count(*) from private.live_laptops where lot_id = lo.id),
+                    'sold', (select count(*) from private.live_laptops x where x.lot_id = lo.id and private.is_sold(x.id)),
+                    'sales', (select coalesce(sum(s.price), 0) from public.sales s join private.live_laptops l on l.id = s.laptop_id
                               where l.lot_id = lo.id and s.status = 'active'))
-                  order by lo.bought_on) from public.lots lo where lo.year = p_year), '[]')
+                  order by lo.bought_on) from private.live_lots lo where lo.year = p_year), '[]')
     ) || case when adm then jsonb_build_object(
            'repairs_sold', (select round(coalesce(sum(private.repairs_of(laptop_id)), 0), 2) from sold)) else '{}'::jsonb end
   );
@@ -3163,20 +3293,20 @@ begin
            order by x.bought_on desc)
     from (
       select lo.prefix, lo.kind, s.name supplier, lo.bought_on, lo.note,
-             (select count(*) from public.laptops where lot_id = lo.id) qty,
-             (select count(*) from public.laptops x where x.lot_id = lo.id and private.is_sold(x.id)) sold,
-             coalesce((select sum(c.cost) from public.laptop_costs c join public.laptops l on l.id = c.laptop_id where l.lot_id = lo.id), 0) purchase,
-             (select count(*) from public.laptops l where l.lot_id = lo.id
+             (select count(*) from private.live_laptops where lot_id = lo.id) qty,
+             (select count(*) from private.live_laptops x where x.lot_id = lo.id and private.is_sold(x.id)) sold,
+             coalesce((select sum(c.cost) from public.laptop_costs c join private.live_laptops l on l.id = c.laptop_id where l.lot_id = lo.id), 0) purchase,
+             (select count(*) from private.live_laptops l where l.lot_id = lo.id
               and not exists (select 1 from public.laptop_costs c where c.laptop_id = l.id)) cost_missing,
              -- parts fitted to single laptops are already inside an expense, so only manual repairs are added
              coalesce((select sum(amount) from public.lot_expenses where lot_id = lo.id and deleted_at is null), 0) lot_exp,
-             coalesce((select sum(r.amount) from public.repairs r join public.laptops l on l.id = r.laptop_id
+             coalesce((select sum(r.amount) from public.repairs r join private.live_laptops l on l.id = r.laptop_id
                        where l.lot_id = lo.id and r.deleted_at is null and r.lot_expense_id is null), 0) repairs,
-             coalesce((select sum(sa.price) from public.sales sa join public.laptops l on l.id = sa.laptop_id
+             coalesce((select sum(sa.price) from public.sales sa join private.live_laptops l on l.id = sa.laptop_id
                        where l.lot_id = lo.id and sa.status = 'active'), 0) sales,
-             coalesce((select round(sum(private.profit(sa.id)), 2) from public.sales sa join public.laptops l on l.id = sa.laptop_id
+             coalesce((select round(sum(private.profit(sa.id)), 2) from public.sales sa join private.live_laptops l on l.id = sa.laptop_id
                        where l.lot_id = lo.id and sa.status = 'active'), 0) gross
-      from public.lots lo join public.suppliers s on s.id = lo.supplier_id) x), '[]');
+      from private.live_lots lo join private.live_suppliers s on s.id = lo.supplier_id) x), '[]');
 end $$;
 
 -- ---------------------------------------------------------------------
@@ -3207,6 +3337,8 @@ begin
                    case when t = 'activity_log' then 'x.id' else 'x.created_at' end, t) into v;
     tabs := tabs || jsonb_build_object(t, v);
   end loop;
+  -- Recently deleted (30 days), so a restored backup can still restore those items
+  tabs := tabs || jsonb_build_object('deletions', coalesce((select jsonb_agg(to_jsonb(d) order by d.deleted_at) from private.deletions d), '[]'));
   return jsonb_build_object('format', 'fcl-v2', 'exported_at', now(), 'tables', tabs);
 end $$;
 
@@ -3215,7 +3347,7 @@ language plpgsql set search_path = '' as $$
 declare t text; list text := '';
 begin
   foreach t in array private.backup_tables() loop list := list || ', public.' || quote_ident(t); end loop;
-  execute 'truncate ' || substr(list, 3) || ', public.sync_ticks, private.rpc_requests restart identity cascade';
+  execute 'truncate ' || substr(list, 3) || ', public.sync_ticks, private.rpc_requests, private.deletions restart identity cascade';
 end $$;
 
 -- Generic loader for an fcl-v2 backup: every table, every column (except generated ones).
@@ -3480,6 +3612,13 @@ begin
   v := private.load_any(p_data);
   insert into public.settings (id) values (1) on conflict (id) do nothing;
   insert into public.suppliers (code, name) values ('00', 'Customer exchange') on conflict (code) do nothing;
+  if jsonb_typeof(p_data -> 'tables' -> 'deletions') = 'array' then
+    insert into private.deletions (id, kind, item_id, label, details, deleted_at, deleted_by, cloud_status, restored_at, restored_by, purged_at)
+    select x.id, x.kind, x.item_id, x.label, x.details, x.deleted_at,
+           (select p.id from public.profiles p where p.id = x.deleted_by), x.cloud_status, x.restored_at,
+           (select p.id from public.profiles p where p.id = x.restored_by), x.purged_at
+    from jsonb_populate_recordset(null::private.deletions, p_data -> 'tables' -> 'deletions') x;
+  end if;
   perform set_config('app.no_log', 'off', true);
   perform private.log('restore', 'backup', null, 'Restored a backup');
   return v;
@@ -3635,6 +3774,380 @@ end $$;
 revoke all on function private.admin_add_user_sql(text, text, text, text, text) from public;
 
 -- ---------------------------------------------------------------------
+-- 0008b_deletes.sql
+-- ---------------------------------------------------------------------
+-- 0008b: delete and restore (Recently deleted, 30 days), with the rules enforced here, not only in the app.
+-- Laptops, lots, suppliers and service partners: admin only. Photos: admin and co-admin.
+-- Payments are never deleted, users are turned off (not deleted), customers stay (they come from sales).
+-- Safe to run twice.
+
+-- ---------- cost helpers that must ignore deleted laptops ----------
+-- This laptop's equal share of its lot's parts/expenses, shared only among laptops that are not deleted.
+create or replace function private.lot_share(p_laptop uuid) returns numeric
+language sql stable set search_path = '' as $$
+  select coalesce(sum(
+           (e.amount - (select f.value from private.fitted(e.id) f))
+           / nullif((select count(*) from private.live_laptops x
+                     where x.lot_id = e.lot_id and (e.line_id is null or x.line_id = e.line_id)), 0)
+         ), 0)
+  from public.laptops l
+  join public.lot_expenses e on e.lot_id = l.lot_id and e.deleted_at is null
+                            and (e.line_id is null or e.line_id = l.line_id)
+  where l.id = p_laptop
+$$;
+
+-- Each laptop's purchase cost from its line, split over the laptops that are not deleted.
+create or replace function private.write_line_costs(p_line uuid) returns void
+language plpgsql set search_path = '' as $$
+declare v_cost numeric; v_n int; v_per numeric; v_last int;
+begin
+  select line_cost into v_cost from public.lot_line_costs where line_id = p_line;
+  delete from public.laptop_costs c using private.live_laptops l where l.id = c.laptop_id and l.line_id = p_line;
+  if v_cost is null then return; end if;
+  select count(*), max(piece_no) into v_n, v_last from private.live_laptops where line_id = p_line;
+  if v_n = 0 then return; end if;
+  v_per := trunc(v_cost / v_n, 2);
+  insert into public.laptop_costs (laptop_id, cost, source)
+  select l.id, case when l.piece_no = v_last then v_cost - v_per * (v_n - 1) else v_per end, 'lot'
+  from private.live_laptops l where l.line_id = p_line;
+end $$;
+
+create or replace function private.supplier_due(p_supplier uuid) returns numeric
+language sql stable set search_path = '' as $$
+  select case when s.code = '00' then 0 else
+    coalesce((select sum(c.cost) from public.laptop_costs c join private.live_laptops l on l.id = c.laptop_id
+              join private.live_lots lo on lo.id = l.lot_id where lo.supplier_id = s.id), 0)
+  - coalesce((select sum(p.amount) from public.supplier_payments p where p.supplier_id = s.id), 0) end
+  from public.suppliers s where s.id = p_supplier
+$$;
+
+-- ---------- rules ----------
+-- Why a laptop must stay (null = it may be deleted). Anything with a customer or money in its history stays.
+create or replace function private.laptop_block_reason(p_laptop uuid) returns text
+language sql stable set search_path = '' as $$
+  select case
+    when exists (select 1 from public.sales where laptop_id = p_laptop and status = 'active')
+      then 'This laptop has a sale. Use Undo sale or Return instead.'
+    when exists (select 1 from public.returns where laptop_id = p_laptop)
+      then 'This laptop was returned by a customer, so it stays in the history.'
+    when exists (select 1 from public.sales where laptop_id = p_laptop)
+      then 'This laptop was sold before (the sale was undone), so it stays in the history.'
+    when exists (select 1 from public.bookings where laptop_id = p_laptop)
+      then 'This laptop was booked by a customer, so it stays in the history.'
+    when exists (select 1 from public.service_jobs where laptop_id = p_laptop)
+      then 'This laptop went for service, so it stays in the history.'
+    when exists (select 1 from public.laptops l join public.lots lo on lo.id = l.lot_id where l.id = p_laptop and lo.kind = 'exchange')
+      then 'This laptop came in exchange on a sale. Its value is part of that sale''s payment.'
+  end
+$$;
+
+-- Unsold laptops (with a cost) that would carry a deleted laptop's cost: same group first, else the same lot.
+create or replace function private.cost_carriers(p_laptop uuid) returns uuid[]
+language plpgsql stable set search_path = '' as $$
+declare l public.laptops; v uuid[];
+begin
+  select * into l from public.laptops where id = p_laptop;
+  select array_agg(x.id order by x.piece_no) into v from private.live_laptops x
+  where x.line_id = l.line_id and x.id <> l.id and not private.is_sold(x.id)
+    and exists (select 1 from public.laptop_costs c where c.laptop_id = x.id);
+  if v is null then
+    select array_agg(x.id order by x.piece_no) into v from private.live_laptops x
+    where x.lot_id = l.lot_id and x.id <> l.id and not private.is_sold(x.id)
+      and exists (select 1 from public.laptop_costs c where c.laptop_id = x.id);
+  end if;
+  return coalesce(v, '{}');
+end $$;
+
+-- ---------- laptop ----------
+-- What the app shows before asking: may it be deleted, and the cost choice.
+create or replace function public.delete_laptop_check(p_laptop_id uuid)
+returns jsonb language plpgsql stable security definer set search_path = '' as $$
+declare l public.laptops; v_cost numeric; v_carry uuid[];
+begin
+  perform private.require_admin();
+  select * into l from private.live_laptops where id = p_laptop_id;
+  if not found then raise exception 'Laptop not found'; end if;
+  v_cost := private.cost_of(l.id);
+  v_carry := private.cost_carriers(l.id);
+  return jsonb_build_object('code', l.code, 'reason', private.laptop_block_reason(l.id),
+    'cost', v_cost, 'can_keep', v_cost is not null and v_cost > 0 and cardinality(v_carry) > 0, 'keep_count', cardinality(v_carry));
+end $$;
+
+-- p_lot_cost: 'reduce' = the lot cost goes down by this laptop's cost;
+--             'keep'   = the lot cost stays; this laptop's cost is shared over the other unsold laptops.
+create or replace function public.delete_laptop(p_laptop_id uuid, p_lot_cost text default 'reduce', p_client_ref uuid default null)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare v jsonb; l public.laptops; v_why text; v_cost numeric; v_carry uuid[]; v_n int; v_per numeric; v_deltas jsonb := '[]';
+        v_mode text := coalesce(p_lot_cost, 'reduce'); v_del uuid; i int; d numeric;
+begin
+  perform private.require_admin();
+  v := private.idem_get(p_client_ref); if v is not null then return v; end if;
+  if v_mode not in ('reduce', 'keep') then raise exception 'Choose reduce or keep for the lot cost'; end if;
+  select * into l from public.laptops where id = p_laptop_id for update;
+  if not found or l.deleted_at is not null then raise exception 'Laptop not found, or already deleted'; end if;
+  v_why := private.laptop_block_reason(l.id);
+  if v_why is not null then raise exception '%', v_why; end if;
+  v_cost := private.cost_of(l.id);
+  if v_cost is null or v_cost = 0 then v_mode := 'none';
+  elsif v_mode = 'keep' then
+    v_carry := private.cost_carriers(l.id); v_n := cardinality(v_carry);
+    if v_n = 0 then raise exception 'There is no other unsold laptop in this lot to carry the cost. Choose to reduce the lot cost.'; end if;
+    v_per := trunc(v_cost / v_n, 2);
+    for i in 1 .. v_n loop
+      d := case when i = v_n then v_cost - v_per * (v_n - 1) else v_per end;
+      update public.laptop_costs set cost = cost + d where laptop_id = v_carry[i];
+      v_deltas := v_deltas || jsonb_build_array(jsonb_build_object('id', v_carry[i], 'delta', d));
+    end loop;
+  else
+    update public.lot_line_costs set line_cost = greatest(line_cost - v_cost, 0) where line_id = l.line_id;
+  end if;
+  update public.laptops set deleted_at = now(), deleted_by = auth.uid() where id = l.id;
+  insert into private.deletions (kind, item_id, label, details, deleted_by)
+  values ('laptop', l.id, l.code || coalesce(' · ' || nullif(concat_ws(' ', nullif(l.shorthand, ''), nullif(l.model, '')), ''), ''),
+          jsonb_build_object('mode', v_mode, 'cost', v_cost, 'line_id', l.line_id, 'deltas', v_deltas), auth.uid())
+  returning id into v_del;
+  perform private.log('delete', 'laptop', l.code, format('Deleted laptop %s', l.code));
+  if v_mode = 'reduce' then
+    perform private.log('delete', 'laptop', l.code, format('Lot cost reduced by %s for deleted laptop %s', private.rs(v_cost), l.code), true);
+  elsif v_mode = 'keep' then
+    perform private.log('delete', 'laptop', l.code, format('Lot cost kept: %s of deleted laptop %s shared over %s other laptops', private.rs(v_cost), l.code, v_n), true);
+  end if;
+  v := jsonb_build_object('deletion_id', v_del, 'code', l.code, 'mode', v_mode);
+  return private.idem_put(p_client_ref, v);
+end $$;
+
+-- ---------- lot ----------
+create or replace function public.delete_lot_check(p_lot_id uuid)
+returns jsonb language plpgsql stable security definer set search_path = '' as $$
+declare lo public.lots;
+begin
+  perform private.require_admin();
+  select * into lo from private.live_lots where id = p_lot_id;
+  if not found then raise exception 'Lot not found'; end if;
+  return jsonb_build_object('prefix', lo.prefix, 'kind', lo.kind,
+    'laptops', (select count(*) from private.live_laptops where lot_id = lo.id),
+    'expenses', (select count(*) from public.lot_expenses where lot_id = lo.id and deleted_at is null),
+    'blockers', coalesce((select jsonb_agg(jsonb_build_object('code', x.code, 'reason', private.laptop_block_reason(x.id)) order by x.piece_no)
+                          from private.live_laptops x where x.lot_id = lo.id and private.laptop_block_reason(x.id) is not null), '[]'));
+end $$;
+
+-- p_confirm must be the lot code (e.g. 01-01-11-26), typed by the admin.
+create or replace function public.delete_lot(p_lot_id uuid, p_confirm text, p_client_ref uuid default null)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare v jsonb; lo public.lots; v_block text; v_laps uuid[]; v_exps uuid[]; v_del uuid;
+begin
+  perform private.require_admin();
+  v := private.idem_get(p_client_ref); if v is not null then return v; end if;
+  select * into lo from public.lots where id = p_lot_id for update;
+  if not found or lo.deleted_at is not null then raise exception 'Lot not found, or already deleted'; end if;
+  if lo.kind = 'exchange' then raise exception 'The exchange lot holds laptops taken in on sales. It cannot be deleted.'; end if;
+  if btrim(coalesce(p_confirm, '')) <> lo.prefix then raise exception 'Type the lot code % to confirm', lo.prefix; end if;
+  select string_agg(x.code || ': ' || private.laptop_block_reason(x.id), E'\n' order by x.piece_no) into v_block
+  from public.laptops x where x.lot_id = lo.id and x.deleted_at is null and private.laptop_block_reason(x.id) is not null;
+  if v_block is not null then raise exception E'These laptops must stay, so the lot cannot be deleted:\n%', v_block; end if;
+  with u as (update public.laptops set deleted_at = now(), deleted_by = auth.uid()
+             where lot_id = lo.id and deleted_at is null returning id)
+  select coalesce(array_agg(id), '{}') into v_laps from u;
+  with u as (update public.lot_expenses set deleted_at = now(), deleted_by = auth.uid()
+             where lot_id = lo.id and deleted_at is null returning id)
+  select coalesce(array_agg(id), '{}') into v_exps from u;
+  update public.lots set deleted_at = now(), deleted_by = auth.uid() where id = lo.id;
+  insert into private.deletions (kind, item_id, label, details, deleted_by)
+  values ('lot', lo.id, format('Lot %s, %s laptop%s', lo.prefix, cardinality(v_laps), case when cardinality(v_laps) = 1 then '' else 's' end),
+          jsonb_build_object('laptops', to_jsonb(v_laps), 'expenses', to_jsonb(v_exps)), auth.uid())
+  returning id into v_del;
+  perform private.log('delete', 'lot', lo.prefix, format('Deleted lot %s with %s laptop%s', lo.prefix, cardinality(v_laps), case when cardinality(v_laps) = 1 then '' else 's' end));
+  v := jsonb_build_object('deletion_id', v_del, 'prefix', lo.prefix, 'laptops', cardinality(v_laps));
+  return private.idem_put(p_client_ref, v);
+end $$;
+
+-- ---------- supplier, service partner ----------
+create or replace function public.delete_supplier(p_supplier_id uuid)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare s public.suppliers; v_del uuid; n int;
+begin
+  perform private.require_admin();
+  select * into s from public.suppliers where id = p_supplier_id for update;
+  if not found or s.deleted_at is not null then raise exception 'Supplier not found, or already deleted'; end if;
+  if s.code = '00' then raise exception 'The customer exchange supplier is part of the app. It cannot be deleted.'; end if;
+  select count(*) into n from public.lots where supplier_id = s.id and deleted_at is null;
+  if n > 0 then raise exception 'This supplier has % lot%. Delete the lots first, or keep the supplier.', n, case when n = 1 then '' else 's' end; end if;
+  if exists (select 1 from public.lots where supplier_id = s.id) then
+    raise exception 'This supplier had lots before (now deleted). It stays so their sticker numbers stay unique.';
+  end if;
+  if exists (select 1 from public.supplier_payments where supplier_id = s.id) then
+    raise exception 'This supplier has payments in the history, so it stays.';
+  end if;
+  update public.suppliers set deleted_at = now(), deleted_by = auth.uid() where id = s.id;
+  insert into private.deletions (kind, item_id, label, deleted_by)
+  values ('supplier', s.id, format('Supplier %s, %s', s.code, s.name), auth.uid()) returning id into v_del;
+  perform private.log('delete', 'supplier', s.code, format('Deleted supplier %s, %s', s.code, s.name));
+  return jsonb_build_object('deletion_id', v_del);
+end $$;
+
+create or replace function public.delete_service_partner(p_partner_id uuid)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare p public.service_partners; v_del uuid; v_name text;
+begin
+  perform private.require_admin();
+  select * into p from public.service_partners where id = p_partner_id for update;
+  if not found or p.deleted_at is not null then raise exception 'Service partner not found, or already deleted'; end if;
+  if exists (select 1 from public.service_jobs where partner_id = p.id) then
+    raise exception 'This partner has service jobs in the history. Turn them off instead.';
+  end if;
+  if exists (select 1 from public.service_payments where partner_id = p.id) then
+    raise exception 'This partner has payments in the history. Turn them off instead.';
+  end if;
+  v_name := coalesce(nullif(btrim(p.shop_name), ''), p.name);
+  update public.service_partners set deleted_at = now(), deleted_by = auth.uid() where id = p.id;
+  insert into private.deletions (kind, item_id, label, deleted_by)
+  values ('partner', p.id, 'Service partner ' || v_name, auth.uid()) returning id into v_del;
+  perform private.log('delete', 'partner', p.id::text, format('Deleted service partner %s', v_name));
+  return jsonb_build_object('deletion_id', v_del);
+end $$;
+
+-- ---------- photo (admin and co-admin) ----------
+-- Removes the photo from the app at once. The photo-delete Edge Function then removes the Cloudinary copy
+-- and reports back with photo_cloud_result. If that fails, the photo stays out of the app and the failure is logged.
+create or replace function public.delete_photo(p_photo_id uuid)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare ph public.photos; v_code text; v_del uuid;
+begin
+  perform private.require_manager();
+  select * into ph from public.photos where id = p_photo_id for update;
+  if not found or ph.deleted_at is not null then raise exception 'Photo not found, or already deleted'; end if;
+  select code into v_code from public.laptops where id = ph.laptop_id;
+  update public.photos set deleted_at = now(), deleted_by = auth.uid() where id = ph.id;
+  insert into private.deletions (kind, item_id, label, details, deleted_by, cloud_status)
+  values ('photo', ph.id, 'Photo of ' || v_code, jsonb_build_object('url', ph.url, 'laptop_id', ph.laptop_id), auth.uid(), 'pending')
+  returning id into v_del;
+  perform private.log('delete', 'photo', v_code, format('Deleted a photo of %s', v_code));
+  return jsonb_build_object('deletion_id', v_del, 'url', ph.url, 'code', v_code);
+end $$;
+
+-- Called only by the photo-delete Edge Function (service key) after it tried Cloudinary.
+create or replace function public.photo_cloud_result(p_deletion_id uuid, p_status text, p_detail text default '')
+returns void language plpgsql security definer set search_path = '' as $$
+declare d private.deletions;
+begin
+  if p_status not in ('deleted', 'failed', 'skipped') then raise exception 'Bad status'; end if;
+  update private.deletions set cloud_status = p_status,
+         details = details || jsonb_build_object('cloud_detail', left(coalesce(p_detail, ''), 300))
+  where id = p_deletion_id and kind = 'photo' returning * into d;
+  if not found then raise exception 'Not found'; end if;
+  if p_status = 'failed' then
+    perform private.log('delete', 'photo', d.label, format('%s: the Cloudinary copy could not be deleted (%s). It is gone from the app.', d.label, left(coalesce(p_detail, ''), 120)));
+  end if;
+end $$;
+
+-- ---------- recently deleted, restore, 30-day cleanup ----------
+-- After 30 days a delete is final: photos, suppliers and partners are removed; deleted laptops and lots keep a
+-- hidden row (code only) so their sticker numbers are never used again, and lose their photos and tests.
+create or replace function private.purge_deleted() returns int
+language plpgsql security definer set search_path = '' as $$
+declare d private.deletions; n int := 0; v_laps uuid[];
+begin
+  perform set_config('app.purging', 'on', true);
+  for d in select * from private.deletions where restored_at is null and purged_at is null
+             and deleted_at < now() - interval '30 days' for update skip locked loop
+    if d.kind = 'photo' then
+      delete from public.photos where id = d.item_id and deleted_at is not null;
+    elsif d.kind = 'supplier' then
+      delete from public.suppliers s where s.id = d.item_id and s.deleted_at is not null
+        and not exists (select 1 from public.lots where supplier_id = s.id)
+        and not exists (select 1 from public.supplier_payments where supplier_id = s.id);
+    elsif d.kind = 'partner' then
+      delete from public.service_partners p where p.id = d.item_id and p.deleted_at is not null
+        and not exists (select 1 from public.service_jobs where partner_id = p.id)
+        and not exists (select 1 from public.service_payments where partner_id = p.id);
+    else
+      v_laps := case when d.kind = 'laptop' then array[d.item_id]
+                     else array(select jsonb_array_elements_text(d.details -> 'laptops')::uuid) end;
+      delete from public.photos where laptop_id = any (v_laps);
+      delete from public.laptop_tests where laptop_id = any (v_laps);
+    end if;
+    update private.deletions set purged_at = now() where id = d.id;
+    n := n + 1;
+  end loop;
+  perform set_config('app.purging', 'off', true);
+  return n;
+end $$;
+
+create or replace function public.recently_deleted()
+returns jsonb language plpgsql security definer set search_path = '' as $$
+begin
+  perform private.require_admin();
+  perform private.purge_deleted();
+  return coalesce((select jsonb_agg(jsonb_build_object(
+      'id', d.id, 'kind', d.kind, 'label', d.label, 'deleted_at', d.deleted_at,
+      'by', coalesce((select name from public.profiles where id = d.deleted_by), 'Someone'),
+      'days_left', greatest(0, 30 - floor(extract(epoch from now() - d.deleted_at) / 86400)::int),
+      'mode', d.details ->> 'mode', 'cost', (d.details ->> 'cost')::numeric,
+      'url', d.details ->> 'url', 'cloud', d.cloud_status,
+      'can_restore', not (d.kind = 'photo' and d.cloud_status = 'deleted'))
+    order by d.deleted_at desc)
+    from private.deletions d where d.restored_at is null and d.purged_at is null), '[]');
+end $$;
+
+create or replace function public.restore_deleted(p_deletion_id uuid)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare d private.deletions; x jsonb; v_code text; v_lot text;
+begin
+  perform private.require_admin();
+  select * into d from private.deletions where id = p_deletion_id for update;
+  if not found or d.restored_at is not null then raise exception 'Nothing to restore'; end if;
+  if d.purged_at is not null or d.deleted_at < now() - interval '30 days' then
+    raise exception 'This was deleted more than 30 days ago and is gone for good.';
+  end if;
+  if d.kind = 'laptop' then
+    select l.code, lo.prefix into v_code, v_lot from public.laptops l join public.lots lo on lo.id = l.lot_id
+    where l.id = d.item_id and lo.deleted_at is not null;
+    if v_lot is not null then raise exception 'Lot % is deleted. Restore the lot first.', v_lot; end if;
+    for x in select * from jsonb_array_elements(d.details -> 'deltas') loop
+      update public.laptop_costs set cost = greatest(cost - (x ->> 'delta')::numeric, 0) where laptop_id = (x ->> 'id')::uuid;
+    end loop;
+    if d.details ->> 'mode' = 'reduce' then
+      update public.lot_line_costs set line_cost = line_cost + (d.details ->> 'cost')::numeric where line_id = (d.details ->> 'line_id')::uuid;
+    end if;
+    update public.laptops set deleted_at = null, deleted_by = null where id = d.item_id returning code into v_code;
+    perform private.log('restore', 'laptop', v_code, format('Restored laptop %s', v_code));
+  elsif d.kind = 'lot' then
+    if exists (select 1 from public.lots lo join public.suppliers s on s.id = lo.supplier_id where lo.id = d.item_id and s.deleted_at is not null) then
+      raise exception 'The supplier of this lot is deleted. Restore the supplier first.';
+    end if;
+    update public.lots set deleted_at = null, deleted_by = null where id = d.item_id returning prefix into v_lot;
+    update public.laptops set deleted_at = null, deleted_by = null
+    where id in (select jsonb_array_elements_text(d.details -> 'laptops')::uuid);
+    update public.lot_expenses set deleted_at = null, deleted_by = null
+    where id in (select jsonb_array_elements_text(d.details -> 'expenses')::uuid);
+    perform private.log('restore', 'lot', v_lot, format('Restored lot %s', v_lot));
+  elsif d.kind = 'supplier' then
+    update public.suppliers set deleted_at = null, deleted_by = null where id = d.item_id returning code || ', ' || name into v_code;
+    perform private.log('restore', 'supplier', d.item_id::text, format('Restored supplier %s', v_code));
+  elsif d.kind = 'partner' then
+    update public.service_partners set deleted_at = null, deleted_by = null where id = d.item_id;
+    perform private.log('restore', 'partner', d.item_id::text, format('Restored service partner %s', private.partner_label(d.item_id)));
+  else
+    if d.cloud_status = 'deleted' then raise exception 'This photo was also removed from Cloudinary, so it cannot come back.'; end if;
+    if exists (select 1 from public.photos p join public.laptops l on l.id = p.laptop_id where p.id = d.item_id and l.deleted_at is not null) then
+      raise exception 'The laptop of this photo is deleted. Restore the laptop first.';
+    end if;
+    update public.photos set deleted_at = null, deleted_by = null where id = d.item_id;
+    perform private.log('restore', 'photo', d.label, format('Restored %s', lower(left(d.label, 1)) || substr(d.label, 2)));
+  end if;
+  update private.deletions set restored_at = now(), restored_by = auth.uid() where id = d.id;
+  return jsonb_build_object('kind', d.kind, 'label', d.label);
+end $$;
+
+-- The daily keep-alive call (GitHub Actions, 09:00 India time) also runs the 30-day cleanup.
+create or replace function public.ping() returns text
+language plpgsql volatile security definer set search_path = '' as $$
+begin
+  perform private.purge_deleted();
+  return 'ok ' || (select count(*) from public.settings)::text;
+end $$;
+
+-- ---------------------------------------------------------------------
 -- 0009_seed_grants.sql
 -- ---------------------------------------------------------------------
 -- 0009: seed rows and function permissions (run last)
@@ -3650,6 +4163,9 @@ revoke execute on function public.bootstrap_first_admin(uuid, text, text) from a
 -- The public warranty check is run only by the warranty-check Edge Function (service key), never by the app.
 revoke execute on function public.warranty_lookup(text, text) from authenticated;
 grant execute on function public.warranty_lookup(text, text) to service_role;
+-- The photo-delete Edge Function reports what Cloudinary said (service key only).
+revoke execute on function public.photo_cloud_result(uuid, text, text) from authenticated;
+grant execute on function public.photo_cloud_result(uuid, text, text) to service_role;
 -- The daily keep-alive call is the only thing the public key may run.
 grant execute on function public.ping() to anon;
 alter default privileges in schema public revoke execute on functions from public, anon;

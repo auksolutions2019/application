@@ -23,6 +23,8 @@ begin
                    case when t = 'activity_log' then 'x.id' else 'x.created_at' end, t) into v;
     tabs := tabs || jsonb_build_object(t, v);
   end loop;
+  -- Recently deleted (30 days), so a restored backup can still restore those items
+  tabs := tabs || jsonb_build_object('deletions', coalesce((select jsonb_agg(to_jsonb(d) order by d.deleted_at) from private.deletions d), '[]'));
   return jsonb_build_object('format', 'fcl-v2', 'exported_at', now(), 'tables', tabs);
 end $$;
 
@@ -31,7 +33,7 @@ language plpgsql set search_path = '' as $$
 declare t text; list text := '';
 begin
   foreach t in array private.backup_tables() loop list := list || ', public.' || quote_ident(t); end loop;
-  execute 'truncate ' || substr(list, 3) || ', public.sync_ticks, private.rpc_requests restart identity cascade';
+  execute 'truncate ' || substr(list, 3) || ', public.sync_ticks, private.rpc_requests, private.deletions restart identity cascade';
 end $$;
 
 -- Generic loader for an fcl-v2 backup: every table, every column (except generated ones).
@@ -296,6 +298,13 @@ begin
   v := private.load_any(p_data);
   insert into public.settings (id) values (1) on conflict (id) do nothing;
   insert into public.suppliers (code, name) values ('00', 'Customer exchange') on conflict (code) do nothing;
+  if jsonb_typeof(p_data -> 'tables' -> 'deletions') = 'array' then
+    insert into private.deletions (id, kind, item_id, label, details, deleted_at, deleted_by, cloud_status, restored_at, restored_by, purged_at)
+    select x.id, x.kind, x.item_id, x.label, x.details, x.deleted_at,
+           (select p.id from public.profiles p where p.id = x.deleted_by), x.cloud_status, x.restored_at,
+           (select p.id from public.profiles p where p.id = x.restored_by), x.purged_at
+    from jsonb_populate_recordset(null::private.deletions, p_data -> 'tables' -> 'deletions') x;
+  end if;
   perform set_config('app.no_log', 'off', true);
   perform private.log('restore', 'backup', null, 'Restored a backup');
   return v;

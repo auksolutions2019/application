@@ -43,7 +43,8 @@ const prefix = () => {
   return s ? `${s.code}-${pad(+D.lot_no || 1, 2)}-${dt.slice(5, 7)}-${dt.slice(2, 4)}` : '';
 };
 const total = () => D.items.reduce((t, it) => t + it.qty, 0);
-const nextLotNo = supId => S.d.lots.filter(x => x.supplier_id === supId).reduce((m, x) => Math.max(m, x.lot_no), 0) + 1;
+// Deleted lots count too (max_lot_no), so their sticker numbers are never used again
+const nextLotNo = supId => Math.max(S.supById.get(supId)?.max_lot_no || 0, S.d.lots.filter(x => x.supplier_id === supId).reduce((m, x) => Math.max(m, x.lot_no), 0)) + 1;
 
 // Most-bought specs of the last 90 days, from the lots' groups, weighted by how many laptops.
 function quickList() {

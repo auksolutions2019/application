@@ -1,7 +1,7 @@
 // Service partners: list, add / edit, partner page (with them now, history, money for admin), charges to fill in.
 import { $, esc, rs, fmtD, tag, val, multiChips, multiVals, waLink, initials } from '../ui/dom.js';
 import { ICON } from '../ui/icons.js';
-import { toast, empty, openSheet, sheetHead, closeModal, dialog, amountBox, guard } from '../ui/feedback.js';
+import { toast, empty, openSheet, sheetHead, closeModal, confirmBox, dialog, amountBox, guard, kebab } from '../ui/feedback.js';
 import { S, load, isAdmin, isMgr } from '../api/store.js';
 import { read, write } from '../api/client.js';
 import { SKILLS } from '../ui/specs.js';
@@ -34,7 +34,7 @@ async function renderPartner() {
   openSheet(`${sheetHead(esc(d.label), `${d.shop_name && d.name !== d.label ? esc(d.name) + ', ' : ''}${esc(d.mobile || 'no mobile')}${d.address ? ', ' + esc(d.address) : ''}`)}
   <div class="badges" data-partner="${d.id}">${(d.skills || []).map(s => `<span class="pill grey">${esc(s)}</span>`).join('')}</div>
   <div class="row" style="margin-top:12px">${d.mobile ? `<a class="btnlink" style="background:var(--ice);color:var(--ink)" href="tel:${esc(d.mobile)}">${ICON.phone}Call</a><a class="btnlink" target="_blank" href="${esc(waLink(d.mobile, msg))}">${ICON.wa}WhatsApp</a>` : ''}
-   ${adm && d.money?.owed > 0 ? `<button class="sm" onclick="A.payPartner('${d.id}')">Pay</button>` : ''}${isMgr() ? `<button class="sm ghost" onclick="A.formPartner('${d.id}')">Edit</button>` : ''}</div>
+   ${adm && d.money?.owed > 0 ? `<button class="sm" onclick="A.payPartner('${d.id}')">Pay</button>` : ''}${isMgr() ? `<button class="sm ghost" onclick="A.formPartner('${d.id}')">Edit</button>` : ''}${adm ? kebab([['Delete partner', `A.delPartner('${d.id}')`, true]], 'Partner actions') : ''}</div>
   <h3 class="sh">With them now (${d.with_them.length})</h3>
   <div class="list flat">${d.with_them.length ? d.with_them.map(j => `<div class="lrow" onclick="A.closeModal();A.openLaptop('${esc(j.code)}')">${thumb(j.code)}<div class="cm">${tag(j.code)}<b style="margin-top:6px">${esc(j.shorthand || j.model || 'Laptop')}</b><div class="muted">${esc((j.issues || []).join(', ') || j.note)}${j.kind === 'warranty' ? ', warranty' : ''}</div></div>
      <span class="pill ${j.overdue ? 'bad' : 'svc'}">${j.days_out} day${j.days_out === 1 ? '' : 's'}${j.overdue ? ', overdue' : ''}</span></div>`).join('') : '<p class="muted" style="padding:12px">Nothing with them right now.</p>'}</div>
@@ -48,6 +48,11 @@ async function renderPartner() {
 
 export const actions = {
   async openPartner(id) { openPartnerId = id; await guard(renderPartner); },
+  async delPartner(id) {
+    const p = S.partnerById.get(id), name = p?.label || p?.name || 'this partner';
+    if (!await confirmBox(`Delete ${esc(name)}?`, 'Only a partner who never had a laptop or a payment can be deleted. Otherwise turn them off. It goes to More → Recently deleted for 30 days.', 'Delete', 1)) return;
+    await guard(async () => { await write('delete_service_partner', { p_partner_id: id }); openPartnerId = null; closeModal(); await load(); toast(`${name} deleted`, 'ok'); });
+  },
   rerenderPartner() { if (openPartnerId) renderPartner().catch(() => {}); },
   formPartner(id) {
     const p = id ? S.partnerById.get(id) : {};

@@ -35,7 +35,9 @@ Setup takes about 30 minutes. Do the steps in this order.
 2. Open `supabase/setup_all.sql` from this repo, copy **all** of it, paste it in, and click **Run**.
 3. The last result shows two numbers: `tables` and `tables_with_rls_on`. They must be the same (34 and 34). That means every table has its access rules on.
 
-**If the SQL Editor says the query is too big:** use the two halves instead. Paste `supabase/setup_part1.sql` into a new query and click **Run**. Then paste `supabase/setup_part2.sql` into another new query and click **Run**. Part 2 ends with the same check (34 and 34). Together they are exactly the same SQL as `setup_all.sql`.
+**If the SQL Editor says the query is too big:** use the three parts instead. Paste `supabase/setup_part1.sql` into a new query and click **Run**. Do the same with `setup_part2.sql`, then `setup_part3.sql`, each in a new query, in that order. Part 3 ends with the same check (34 and 34). Together they are exactly the same SQL as `setup_all.sql`.
+
+**After an app update that changes the database:** run the setup again (all of it, or the three parts). It upgrades the existing database and keeps all data.
 
 The file is safe to run again; every step checks first. Do not edit it by hand: it is built from `supabase/migrations/` with `node tools/build-setup.mjs`.
 
@@ -47,9 +49,9 @@ The file is safe to run again; every step checks first. Do not edit it by hand: 
    - Turn **off** "Confirm email".
 2. Under **Database → Publications → supabase_realtime**, check that the table **sync_ticks** is ticked (setup_all.sql adds it). This is what makes a sale on one phone show on the other.
 
-## 4. Deploy the four Edge Functions
+## 4. Deploy the five Edge Functions
 
-These handle the PIN login with its 5-try lock, PIN changes, user management, and the public warranty check behind the QR on bills. They are the only place the service key is used, and it stays inside Supabase.
+These handle the PIN login with its 5-try lock, PIN changes, user management, the public warranty check behind the QR on bills, and deleting photos from Cloudinary. They are the only place the service key is used, and it stays inside Supabase.
 
 **Option A – Supabase CLI** (Windows PowerShell, inside this project folder; needs Node.js):
 
@@ -60,13 +62,14 @@ npx supabase functions deploy auth-login --no-verify-jwt --use-api
 npx supabase functions deploy change-pin --no-verify-jwt --use-api
 npx supabase functions deploy admin-users --no-verify-jwt --use-api
 npx supabase functions deploy warranty-check --no-verify-jwt --use-api
+npx supabase functions deploy photo-delete --no-verify-jwt --use-api
 ```
 
 - `supabase login` opens the browser: sign in with the dealer's Supabase account.
 - The project ref is the part of the Project URL before `.supabase.co`. It is also under **Project Settings → General**.
 - `--no-verify-jwt` is needed because each function checks the caller itself, and the login function is called before anyone is logged in.
 
-**Option B – Dashboard:** **Edge Functions → Deploy a new function → Via Editor**. Do this once for each of `auth-login`, `change-pin`, `admin-users` and `warranty-check`:
+**Option B – Dashboard:** **Edge Functions → Deploy a new function → Via Editor**. Do this once for each of `auth-login`, `change-pin`, `admin-users`, `warranty-check` and `photo-delete`:
 1. Use the folder name as the function name.
 2. Paste the file `supabase/functions/<name>/index.ts`.
 3. Click **Deploy**.
@@ -81,6 +84,17 @@ npx supabase secrets set APP_ORIGIN=https://first-choice-laptops.pages.dev
 ```
 
 You can also add it in the dashboard: **Edge Functions → Secrets**, name `APP_ORIGIN`. Use the site address from step 8. If you skip this, any site may call the functions; the PIN lock and role checks still apply.
+
+**Cloudinary secrets (for deleting photos).** `photo-delete` needs three secrets. They go only into Supabase, never into the app or this repo:
+
+1. Sign in at **cloudinary.com**. On the **Dashboard** (Home), or under **Settings (gear) → API Keys**, you see the **Cloud name**, the **API Key** and the **API Secret** (click the eye or *Reveal* to see the secret).
+2. In Supabase: **Edge Functions → Secrets → Add new secret**, three times:
+   - `CLOUDINARY_CLOUD_NAME` = the cloud name (the same one entered in the app's Settings → Photos)
+   - `CLOUDINARY_API_KEY` = the API key (digits)
+   - `CLOUDINARY_API_SECRET` = the API secret
+3. Click **Save**. Nothing needs redeploying.
+
+Without them, deleting a photo still removes it from the app; the Cloudinary copy stays and Activity says so.
 
 Another optional secret is `LOGIN_EMAIL_DOMAIN` (default `fcl.local`). It is the domain of the hidden login emails. Change it only if Supabase refuses `fcl.local`, and use the same domain in step 6.
 

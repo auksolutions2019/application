@@ -24,12 +24,12 @@ const VIEWS = Object.assign({}, ...mods.map(m => m.views || {}));
 const TITLES = { home: 'Home', scan: 'Scan sticker', stock: 'Stock', sales: 'Customers', more: 'More', suppliers: 'Suppliers',
   debts: 'Liabilities', reports: 'Reports', backup: 'Backup and import', share: 'Share stock', prices: 'Model prices',
   money: "Today's money", activity: 'Activity', settings: 'Settings', partners: 'Service partners', shopexp: 'Shop expenses',
-  lotpnl: 'Lot P&L', users: 'Users', pin: 'Change my PIN' };
+  lotpnl: 'Lot P&L', users: 'Users', pin: 'Change my PIN', deleted: 'Recently deleted' };
 // Who may open which screen (the database enforces the same rules)
 const ACCESS = { sales: 'mgr', suppliers: 'mgr', money: 'mgr', reports: 'mgr', activity: 'mgr',
-  debts: 'admin', settings: 'admin', backup: 'admin', shopexp: 'admin', lotpnl: 'admin', users: 'admin' };
+  debts: 'admin', settings: 'admin', backup: 'admin', shopexp: 'admin', lotpnl: 'admin', users: 'admin', deleted: 'admin' };
 const allowed = v => !ACCESS[v] || (ACCESS[v] === 'mgr' ? role() !== 'staff' : role() === 'admin');
-const MORE = ['suppliers', 'debts', 'reports', 'backup', 'share', 'prices', 'money', 'activity', 'settings', 'partners', 'shopexp', 'lotpnl', 'users', 'pin'];
+const MORE = ['suppliers', 'debts', 'reports', 'backup', 'share', 'prices', 'money', 'activity', 'settings', 'partners', 'shopexp', 'lotpnl', 'users', 'pin', 'deleted'];
 
 let view = 'home', renderSeq = 0;
 
