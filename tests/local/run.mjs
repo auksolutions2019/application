@@ -774,5 +774,87 @@ eq((await rpc(U.admin, 'get_snapshot')).suppliers.find(s => s.code === '01').due
 ok((await rpc(U.admin, 'money_day', { p_date: '2026-04-03' })).outs.some(x => +x.amt === 12000), 'old refund shows in Today\'s money for its date');
 ok((await rpc(U.admin, 'activity_page', {})).some(a => a.actor_name === 'Co-admin (old app)'), 'old activity log kept');
 
+console.log('\nExports: Excel, CSV, SQL');
+{
+  const { buildXlsx, buildCsvZip, buildSql } = await import('../../ui/exporters.js');
+  const zipFile = (z, end) => { const i = z.FullPaths.findIndex(x => x.endsWith(end)); return i < 0 ? null : new TextDecoder().decode(z.FileIndex[i].content); };
+  const { createRequire } = await import('node:module');
+  const XLSX = createRequire(import.meta.url)('../../lib/xlsx.full.min.js');
+  const ST2 = { ...U.staff, sess: '10000000-0000-0000-0000-0000000000cd' };
+  await db.query('update public.profiles set active = true where id = $1', [ST2.id]);
+  await db.query('insert into public.app_sessions (session_id, user_id) values ($1, $2) on conflict do nothing', [ST2.sess, ST2.id]);
+  ok(/Ask the admin or co-admin/.test((await rpcErr(ST2, 'export_sheets', {}))?.message || ''), 'staff cannot export');
+  ok(await rpcErr(U.coadmin, 'export_dump'), 'only the admin gets the SQL file');
+  ok(await rpcErr(U.coadmin, 'export_backup'), 'only the admin gets the JSON backup');
+
+  // Excel (admin)
+  const ex = await rpc(U.admin, 'export_sheets', { p_format: 'xlsx' });
+  const want = ['Lots', 'Laptops', 'Sales', 'Payments', 'Customers', 'Suppliers', 'Supplier payments', 'Lot expenses', 'Shop expenses',
+    'Liabilities', 'Liability payments', 'Service partners', 'Service jobs', 'Accessories', 'Stock movements', 'Activity'];
+  const file = await buildXlsx(ex.sheets, XLSX);
+  const wb = XLSX.read(file, { type: 'array', cellNF: true, cellDates: false });
+  eq(wb.SheetNames.join('|'), want.join('|'), 'Excel: one sheet per table, in order');
+  let headersOk = true;
+  for (const sh of ex.sheets) {
+    const ws = wb.Sheets[sh.name], hdr = XLSX.utils.sheet_to_json(ws, { header: 1 })[0] || [];
+    if (hdr.join('|') !== sh.cols.map(c => c.h).join('|')) { headersOk = false; console.log('   header mismatch', sh.name, hdr); }
+  }
+  ok(headersOk, 'Excel: every sheet has its column headers');
+  const lapSh = ex.sheets.find(s => s.name === 'Laptops'), wsL = wb.Sheets.Laptops;
+  const ci = h => lapSh.cols.findIndex(c => c.h === h), ref = (h, row) => XLSX.utils.encode_cell({ c: ci(h), r: row });
+  const soldRow = lapSh.rows.findIndex(r => r[ci('Price')] != null) + 1;
+  const pc = wsL[ref('Price', soldRow)], dc = wsL[ref('Sale date', soldRow)], cc = wsL[ref('Cost', soldRow)];
+  ok(pc?.t === 'n' && cc?.t === 'n' && /₹/.test(pc.z || ''), 'Excel: ₹ amounts are numbers (with ₹ format)', JSON.stringify({ pc, cc }));
+  ok(dc?.t === 'n' && /dd.*mm.*yyyy/.test(dc.z || ''), 'Excel: dates are real dates, shown DD-MM-YYYY', JSON.stringify(dc));
+  const payRows = XLSX.utils.sheet_to_json(wb.Sheets.Payments, { header: 1 }), lastPay = payRows[payRows.length - 1];
+  const paySum = ex.sheets.find(s => s.name === 'Payments').rows.reduce((t, r) => t + (+r[4] || 0), 0);
+  ok(lastPay[0] === 'Total' && Math.abs(lastPay[4] - paySum) < 0.01, 'Excel: totals row on Payments', JSON.stringify(lastPay));
+  const sheetXml = zipFile(XLSX.CFB.read(file, { type: 'array' }), 'xl/worksheets/sheet2.xml') || '';
+  ok(/state="frozen"/.test(sheetXml) && /<col min="1" max="1" width=/.test(sheetXml) && /s="1"/.test(sheetXml), 'Excel: header row frozen and bold, column widths set');
+  ok((await rpc(U.admin, 'activity_page', {})).some(a => a.message === 'Exported Excel (all time)' && a.actor_name === 'Ayan'), 'the export is in Activity (who, format, range)');
+
+  // CSV zip
+  const zipped = await buildCsvZip(ex.sheets, XLSX), cfb = XLSX.CFB.read(zipped, { type: 'array' });
+  const csvFiles = cfb.FileIndex.filter(f => f.type === 2 && /\.csv$/.test(f.name));
+  const lotsCsv = zipFile(cfb, csvFiles.find(f => /Lots/.test(f.name)).name) || '';
+  ok(csvFiles.length === want.length && lotsCsv.replace('﻿', '').startsWith('Lot code,Supplier,Bought on'), 'CSV zip: one CSV per table with headers', csvFiles.length);
+
+  // co-admin: no costs, profit, supplier money or debts
+  const exC = await rpc(U.coadmin, 'export_sheets', {});
+  const allCols = exC.sheets.flatMap(s => s.cols.map(c => s.name + ':' + c.h));
+  ok(!allCols.some(c => /:(Cost|Full cost|Profit|Average cost|Unit cost|Bought|Owed|Charges|Charge)$/.test(c)) && !allCols.includes('Suppliers:Paid'),
+     'co-admin export: no cost, profit or supplier money columns');
+  ok(!exC.sheets.some(s => ['Supplier payments', 'Lot expenses', 'Shop expenses', 'Liabilities', 'Liability payments'].includes(s.name)), 'co-admin export: no supplier money, expenses or debts sheets');
+  ok(!(exC.sheets.find(s => s.name === 'Activity').rows.some(r => /cost|Supplier .*paid/i.test(r[3]))), 'co-admin export: no admin-only activity lines');
+
+  // date range: sales only from that range, masters in full
+  const exR = await rpc(U.admin, 'export_sheets', { p_from: today, p_to: today });
+  ok(exR.sheets.find(s => s.name === 'Sales').rows.every(r => r[1] === today) && exR.sheets.find(s => s.name === 'Laptops').rows.length === ex.sheets.find(s => s.name === 'Laptops').rows.length,
+     'date range: sales from that range only; laptops always in full');
+  const exD = await rpc(U.admin, 'export_sheets', { p_deleted: true });
+  ok(exD.sheets.find(s => s.name === 'Laptops').cols.some(c => c.h === 'Deleted on') && !ex.sheets.find(s => s.name === 'Laptops').cols.some(c => c.h === 'Deleted on'), 'include deleted items: off by default, adds them when on');
+
+  // SQL dump restores into an empty database after the setup file
+  const dump = await rpc(U.admin, 'export_dump');
+  const sql = await buildSql(dump, { by: 'Ayan' });
+  ok(/^-- First Choice Laptops/.test(sql) && /\nbegin;/.test(sql) && /\ncommit;/.test(sql) && /App version: fcl-v\d+/.test(sql) && !/password|pin_hash|service_role/i.test(sql), 'SQL: header (date, version, counts), BEGIN/COMMIT, no secrets');
+  const db2 = new PGlite({ extensions: { pgcrypto } });
+  await db2.exec(readFileSync(join(here, 'supabase_stub.sql'), 'utf8'));
+  await db2.exec(readFileSync(join(migDir, '..', 'setup_all.sql'), 'utf8'));
+  let loadErr = null; try { await db2.exec(sql); } catch (e) { loadErr = e.message; }
+  ok(loadErr === null, 'SQL file loads into an empty database after setup_all.sql', loadErr);
+  let match = true;
+  for (const t of dump.tables) {
+    const n = +(await db2.query(`select count(*) n from ${t.table}`)).rows[0].n;
+    if (n !== t.rows.length) { match = false; console.log('   count mismatch', t.table, n, t.rows.length); }
+  }
+  ok(match, 'row counts match for every table (' + dump.tables.length + ' tables)');
+  const srcLap = +(await one(`select count(*) n from public.laptops`)).n, dstLap = +(await db2.query(`select count(*) n from public.laptops`)).rows[0].n;
+  const srcDue = (await one(`select coalesce(sum(price), 0) s from public.sales where status = 'active'`)).s, dstDue = (await db2.query(`select coalesce(sum(price), 0) s from public.sales where status = 'active'`)).rows[0].s;
+  ok(srcLap === dstLap && String(srcDue) === String(dstDue), 'same laptops and sales totals after loading');
+  ok(await db2.exec(sql).then(() => false, e => /already has laptops/.test(e.message)), 'the SQL file refuses a database that has data');
+  await db2.close();
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

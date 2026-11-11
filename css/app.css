@@ -477,3 +477,11 @@ header button.bell svg{width:22px;height:22px}
 .nrow .nic.low_stock{background:#FDE8E7!important}.nrow .nic.service_overdue{background:#FFF3DC!important}
 .nrow:not(.unread) .cm b{font-weight:600;color:var(--ink2)}
 .nrow .cm b{white-space:normal;overflow:visible;text-overflow:clip}
+
+/* Export */
+.xbtns{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}
+.xbtns button{flex-direction:column;align-items:flex-start;text-align:left;min-height:68px;padding:12px;gap:2px;font-size:15px}
+.xbtns button small{font-weight:500;font-size:12px;opacity:.8;line-height:1.3}
+.xbtns button svg{display:none}
+.xprog{margin-top:12px;background:var(--ice);border-radius:12px;padding:10px 12px;font-size:13.5px;font-weight:600}
+.xprog .btrack{height:6px;border-radius:4px;background:#D5DFEE;margin-top:8px;overflow:hidden}

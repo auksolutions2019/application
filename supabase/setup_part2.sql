@@ -963,6 +963,7 @@ end $$;
 create or replace function private.acc_moves_after() returns trigger
 language plpgsql security definer set search_path = '' as $$
 begin
+  if current_setting('app.no_log', true) = 'on' then return null; end if;   -- loading a backup: its notifications come with it
   perform private.acc_check_low(new.accessory_id,
     case when new.kind = 'out' and new.customer <> '' then 'After the sale to ' || new.customer
          when new.kind = 'out' then 'After a sale' when new.kind = 'adjust' then 'After an adjustment' else '' end);

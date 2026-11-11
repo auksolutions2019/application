@@ -243,6 +243,16 @@ After that, use **Download backup** every week. **Restore** replaces all busines
 
 ---
 
+## 13. Export (More → Backup and import → Export)
+
+- **Who:** the admin gets every format; the co-admin gets Excel and CSV only, without costs, profit, supplier money or debts; staff get no export.
+- **Excel (.xlsx):** one sheet per table, with a bold, frozen header, amounts in ₹ as numbers, real dates (DD-MM-YYYY) and a totals row.
+- **CSV (.zip):** one file per table, for other software.
+- **SQL (.sql):** a full backup that loads into a new Supabase project. Run `setup_all.sql` (or parts 1 to 3) first, then this file, then create the admin again (step 6). It has no logins, PINs or secrets.
+- **JSON:** the backup that this app's Restore reads.
+- **Options:** a date range (applies to sales, payments, expenses, service jobs and stock movements) and "include deleted items". SQL and JSON are always complete.
+- Every export is recorded in Activity. The files contain customer names, mobiles and money: keep them private.
+
 ## Roles
 
 | | Admin | Co-admin | Staff |

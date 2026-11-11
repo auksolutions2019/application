@@ -28,7 +28,7 @@ const TITLES = { home: 'Home', scan: 'Scan sticker', stock: 'Stock', sales: 'Cus
   lotpnl: 'Lot P&L', users: 'Users', pin: 'Change my PIN', deleted: 'Recently deleted', notifs: 'Notifications' };
 // Who may open which screen (the database enforces the same rules)
 const ACCESS = { sales: 'mgr', suppliers: 'mgr', money: 'mgr', reports: 'mgr', activity: 'mgr',
-  debts: 'admin', settings: 'admin', backup: 'admin', shopexp: 'admin', lotpnl: 'admin', users: 'admin', deleted: 'admin' };
+  debts: 'admin', settings: 'admin', backup: 'mgr', shopexp: 'admin', lotpnl: 'admin', users: 'admin', deleted: 'admin' };
 const allowed = v => !ACCESS[v] || (ACCESS[v] === 'mgr' ? role() !== 'staff' : role() === 'admin');
 const MORE = ['suppliers', 'debts', 'reports', 'backup', 'share', 'prices', 'money', 'activity', 'settings', 'partners', 'shopexp', 'lotpnl', 'users', 'pin', 'deleted'];
 

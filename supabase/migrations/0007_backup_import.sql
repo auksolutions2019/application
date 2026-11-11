@@ -15,7 +15,7 @@ create or replace function private.backup_tables() returns text[] language sql i
 $$;
 
 create or replace function public.export_backup()
-returns jsonb language plpgsql stable security definer set search_path = '' as $$
+returns jsonb language plpgsql security definer set search_path = '' as $$
 declare t text; v jsonb; tabs jsonb := '{}';
 begin
   perform private.require_admin();
@@ -25,6 +25,7 @@ begin
     tabs := tabs || jsonb_build_object(t, v);
   end loop;
   -- Recently deleted (30 days), so a restored backup can still restore those items
+  perform private.log('export', 'export', 'json', 'Exported a JSON backup (all data)');
   tabs := tabs || jsonb_build_object('deletions', coalesce((select jsonb_agg(to_jsonb(d) order by d.deleted_at) from private.deletions d), '[]'));
   return jsonb_build_object('format', 'fcl-v2', 'exported_at', now(), 'tables', tabs);
 end $$;

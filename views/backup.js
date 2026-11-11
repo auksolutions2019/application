@@ -1,8 +1,10 @@
-// Backup and import (admin): download a backup, restore one, bring in the old app's backup or the dealer's Excel.
-import { $, esc, rs, todayIN, enc, dec } from '../ui/dom.js';
+// Backup and import (admin): export, restore, bring in the old app's backup or the dealer's Excel.
+// Co-admin sees only Export (Excel and CSV, without costs, profit, supplier money or debts).
+import { $, esc, rs, todayIN, enc, dec, chips, chipVal } from '../ui/dom.js';
 import { ICON } from '../ui/icons.js';
 import { toast, confirmBox, dialog, guard } from '../ui/feedback.js';
-import { S, load } from '../api/store.js';
+import { S, load, isAdmin } from '../api/store.js';
+import { buildXlsx, buildCsvZip, buildSql, exportName } from '../ui/exporters.js';
 import { read, write } from '../api/client.js';
 import { readWorkbook, defaultAnswers, buildPlan, NOT_NAMES } from '../lib/excel-plan.js';
 
@@ -53,9 +55,21 @@ function excelPreview() {
 export const views = {
   backup() {
     if (xl) return excelPreview();
-    const empty = !hasData();
-    return `<div class="card"><h3>Backup</h3><p class="muted">Everything is saved in Supabase. Download a backup file every week as well, and keep it somewhere safe.</p>
-    <button style="width:100%;margin-top:12px" onclick="A.exportData()">${ICON.cloud}Download backup</button></div>
+    const empty = !hasData(), adm = isAdmin();
+    const exp = `<div class="card"><h3>Export</h3><p class="muted">${adm ? 'Everything is saved in Supabase. Download a backup every week as well, and keep it somewhere safe.' : 'Download stock, sales and customers for Excel or other software.'}</p>
+    <label>Date range</label>${chips('xrange', [['all', 'All time'], ['month', 'This month'], ['year', 'This year'], ['custom', 'Custom']], 'all', 'wrap')}
+    <div id="xcustom" class="row nw hidden"><div><label>From</label><input id="xfrom" type="date" max="${todayIN()}"></div><div><label>To</label><input id="xto" type="date" max="${todayIN()}" value="${todayIN()}"></div></div>
+    <p class="muted" style="margin-top:6px">The range applies to sales, payments, expenses, service jobs and stock movements. Lots, laptops, customers and suppliers are always complete.</p>
+    <label class="tog"><input type="checkbox" id="xdel">Include deleted items (Recently deleted)</label>
+    <div class="xbtns">
+      <button onclick="A.exportAs('xlsx')">📊 Excel (.xlsx)<small>A sheet per table, easy to read</small></button>
+      <button class="ghost" onclick="A.exportAs('csv')">🗂 CSV (.zip)<small>One file per table, for other software</small></button>
+      ${adm ? `<button class="ghost" onclick="A.exportAs('sql')">🛢 SQL (.sql)<small>Full backup that loads into a new Supabase project</small></button>
+      <button class="ghost" onclick="A.exportData()">${ICON.cloud} JSON backup<small>For Restore in this app</small></button>` : ''}</div>
+    ${adm ? '<p class="muted" style="margin-top:8px">SQL and JSON are always complete backups: the date range and deleted-items choice do not apply to them.</p>' : ''}
+    <div id="xprog" class="xprog hidden"></div></div>`;
+    if (!adm) return exp;
+    return `${exp}
     <div class="card"><h3>Restore from a backup file</h3><p class="muted">Replaces all stock, sales and money records with the file. Users and PINs are not changed.</p>
     <input type="file" accept=".json,application/json" style="margin-top:10px" onchange="A.restoreData(this.files[0]);this.value=''"></div>
     <div class="card"><h3>Bring in old data (one time)</h3><p class="muted">${empty ? 'Do this once, before adding anything else.' : 'Only works on an empty database. Use Restore above to replace everything.'}</p>
@@ -65,15 +79,64 @@ export const views = {
   }
 };
 
+const PRIVATE = 'This file contains customer names, mobiles and money details. Keep it private.';
+function save(blob, name) {
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+}
+function progress(text, frac) {
+  const p = $('xprog'); if (!p) return;
+  p.classList.remove('hidden'); p.innerHTML = `<span>${esc(text)}</span>${frac != null ? `<div class="btrack"><div style="width:${Math.round(frac * 100)}%"></div></div>` : ''}`;
+}
+const doneProgress = () => $('xprog')?.classList.add('hidden');
+function range() {
+  const k = chipVal('xrange') || 'all', t = todayIN();
+  if (k === 'month') return { p_from: t.slice(0, 8) + '01', p_to: t };
+  if (k === 'year') return { p_from: t.slice(0, 5) + '01-01', p_to: t };
+  if (k === 'custom') {
+    const f = $('xfrom').value, to = $('xto').value || t;
+    if (!f) throw new Error('Choose the start date');
+    if (f > to) throw new Error('The start date is after the end date');
+    return { p_from: f, p_to: to };
+  }
+  return { p_from: null, p_to: null };
+}
+export function after(view) {
+  if (view !== 'backup') return;
+  $('xrange')?.addEventListener('change', () => $('xcustom')?.classList.toggle('hidden', chipVal('xrange') !== 'custom'));
+}
+
 export const actions = {
   async exportData() {
+    if (!await confirmBox('Keep this file private', PRIVATE, 'Download')) return;
     await guard(async () => {
+      progress('Getting all data…');
       const d = await read('export_backup');
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(new Blob([JSON.stringify(d)], { type: 'application/json' }));
-      a.download = `first-choice-backup-${todayIN()}.json`; a.click();
-      toast('Backup downloaded', 'ok');
-    });
+      save(new Blob([JSON.stringify(d)], { type: 'application/json' }), exportName('json', todayIN()));
+      doneProgress(); toast('Backup downloaded', 'ok');
+    }); doneProgress();
+  },
+  async exportAs(fmt) {
+    let r; try { r = range(); } catch (e) { return toast(e.message); }
+    if (!await confirmBox('Keep this file private', PRIVATE, 'Download')) return;
+    await guard(async () => {
+      const T = todayIN();
+      if (fmt === 'sql') {
+        progress('Getting all data…');
+        const dump = await read('export_dump');
+        const sql = await buildSql(dump, { by: S.d.me?.name }, (t, f) => progress('Building the SQL file. ' + t, f));
+        save(new Blob([sql], { type: 'application/sql' }), exportName('sql', T));
+      } else {
+        progress('Getting the data…');
+        const data = await read('export_sheets', { ...r, p_deleted: $('xdel').checked, p_format: fmt });
+        await loadScript('lib/xlsx.full.min.js');
+        const step = (t, f) => progress(`Building the ${fmt === 'xlsx' ? 'Excel' : 'CSV'} file. ${t}`, f);
+        const bytes = fmt === 'xlsx' ? await buildXlsx(data.sheets, window.XLSX, step) : await buildCsvZip(data.sheets, window.XLSX, step);
+        save(new Blob([bytes], { type: fmt === 'xlsx' ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : 'application/zip' }),
+             exportName(fmt === 'xlsx' ? 'xlsx' : 'zip', T));
+      }
+      doneProgress(); toast(`${fmt === 'xlsx' ? 'Excel' : fmt.toUpperCase()} file downloaded`, 'ok');
+    }); doneProgress();
   },
   async restoreData(f) {
     if (!f) return;

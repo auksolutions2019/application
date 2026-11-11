@@ -4,7 +4,7 @@
 import { createRequire } from 'node:module';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { startDevServer, seed, USERS, PIN } from './devserver.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -392,6 +392,38 @@ console.log('Accessories, notifications, photo sheet');
   await page.click('#dlgno'); await page.evaluate(() => A.closeModal());
 }
 
+console.log('Export');
+{
+  const dl = join(here, 'screenshots', 'downloads'); rmSync(dl, { recursive: true, force: true }); mkdirSync(dl, { recursive: true });
+  const cdp = await page.createCDPSession(); await cdp.send('Page.setDownloadBehavior', { behavior: 'allow', downloadPath: dl });
+  const XLSX = createRequire(join(here, '..', '..', 'lib', 'x.js'))('./xlsx.full.min.js');
+  const waitFile = async ext => { for (let i = 0; i < 60; i++) { const f = readdirSync(dl).find(x => x.endsWith(ext)); if (f) { await wait(300); return f; } await wait(250); } return null; };
+  const today = (await q1('select private.today()::text d')).d;
+  await go('backup');
+  ok(/Export/.test(await main()) && /Excel \(\.xlsx\)/.test(await main()) && /CSV \(\.zip\)/.test(await main()) && /SQL \(\.sql\)/.test(await main()) && /JSON backup/.test(await main()),
+     'admin Export: Excel, CSV, SQL and JSON');
+  await page.evaluate(() => document.querySelector('#xrange [data-v="custom"]').click()); await wait(200);
+  ok(await page.$eval('#xcustom', e => !e.classList.contains('hidden')), 'Custom shows From and To dates');
+  await page.evaluate(() => document.querySelector('#xrange [data-v="all"]').click());
+  await shot('10a-export');
+  await page.evaluate(() => { A.exportAs('xlsx'); }); await wait(500);
+  ok(/customer names, mobiles and money details\. Keep it private\./.test(await page.$eval('#dlg', e => e.innerText)), 'warning before download: keep it private');
+  await page.click('#dlgok');
+  const xf = await waitFile('.xlsx');
+  ok(xf === 'first-choice-export-' + today + '.xlsx', 'Excel file: first-choice-export-DATE.xlsx', xf);
+  if (xf) {
+    const wb = XLSX.read(readFileSync(join(dl, xf)), { cellNF: true });
+    const lap = XLSX.utils.sheet_to_json(wb.Sheets.Laptops, { header: 1 });
+    ok(wb.SheetNames.length === 16 && lap[0][0] === 'Sticker code' && lap.length > 5, 'the downloaded Excel opens: 16 sheets, laptops listed', wb.SheetNames.length);
+  }
+  await page.evaluate(() => { A.exportAs('csv'); }); await wait(400); await page.click('#dlgok');
+  ok(await waitFile('.zip') === 'first-choice-export-' + today + '.zip', 'CSV zip downloaded');
+  await page.evaluate(() => { A.exportAs('sql'); }); await wait(400); await page.click('#dlgok');
+  const sf = await waitFile('.sql');
+  ok(sf && /^-- First Choice Laptops/.test(readFileSync(join(dl, sf), 'utf8')) && /\ncommit;/.test(readFileSync(join(dl, sf), 'utf8')), 'SQL file downloaded', sf);
+  ok(+(await q1("select count(*) n from public.activity_log where action = 'export'")).n >= 3, 'each export is in Activity');
+}
+
 console.log('Offline');
 await page.setOfflineMode(true); await page.evaluate(() => dispatchEvent(new Event('offline'))); await wait(300);
 ok(await page.$eval('#offline', e => !e.classList.contains('hidden')), 'offline banner shows');
@@ -405,6 +437,7 @@ console.log('Staff');
 await login(USERS[2]);
 const dock = await page.$eval('#dock', e => e.innerText);
 ok(!/Customers/.test(dock) && /Service/.test(dock), 'staff dock: Service instead of Customers');
+await go('backup'); ok(!/Export/.test(await main()) && /laptops on the shelf/.test(await main()), 'staff cannot open Export');
 ok(!/Stock value|Customers owe/.test(await main()), 'staff Home: no money');
 await go('more'); ok(!/Reports|Liabilities|Settings|Backup|Activity|Suppliers/.test(await main()), 'staff More: no reports, money, suppliers, activity, settings or backup');
 await go('reports'); ok(/laptops on the shelf/.test(await main()), 'staff opening Reports lands on Home');
@@ -422,6 +455,8 @@ await login(USERS[1]);
 ok(!/You owe/.test(await main()), 'co-admin Home: no "You owe"');
 await go('money'); ok(!/Supplier|Ravi/.test(await main()), "co-admin Today's money: no supplier or partner names");
 await go('reports'); ok(!/Gross profit|Net profit/.test(await main()), 'co-admin Reports: no profit');
+await go('more'); ok(/Export/.test(await main()), 'co-admin More: Export');
+await go('backup'); ok(/Excel \(\.xlsx\)/.test(await main()) && /CSV \(\.zip\)/.test(await main()) && !/SQL \(\.sql\)|JSON backup|Restore|Danger zone/.test(await main()), 'co-admin Export: Excel and CSV only, no restore');
 
 console.log('Wrong PIN lock');
 await page.goto('http://localhost:8787/', { waitUntil: 'networkidle0' });
