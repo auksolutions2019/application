@@ -7,6 +7,7 @@ import { S, load, laptopByCode, cachedLaptop, isAdmin, isMgr, role } from '../ap
 import { read, write, updateLaptop, fn } from '../api/client.js';
 import { specEditor, wireSpecEditor, readSpecs, lapName, SKILLS } from '../ui/specs.js';
 import { printStickers, printBill, billText, warrantyOf } from '../ui/print.js';
+import { accPicker, giveWithSale, resetPicker } from './accessories.js';
 import { TESTS, LEADS, status, testBadge, testCount, testsPassed, ageDays, oldDays, atService, lotOf, noteLine, thumb } from './common.js';
 
 let cur = null, mtab = 'hand', resvSell = false, editSpecs = false, dirty = false, floorCache = new Map(), photoEdit = false;
@@ -109,6 +110,7 @@ function handPane(l) {
   <label>Laptop warranty</label>${chips('hwar', [['0', 'None'], ['3', '3 months'], ['6', '6 months'], ['12', '12 months']], String([0, 3, 6, 12].includes(def) ? def : 0))}
   <label>Charger and battery warranty</label>${chips('hacc', [['0', 'None'], ['6', '6 months'], ['12', '12 months']], String([0, 6, 12].includes(accDef) ? accDef : 0))}
   <p class="muted" style="margin-top:6px">Name and mobile are optional, but the mobile is needed for a warranty or if money is still due.</p>
+  ${accPicker('h')}
   <button style="width:100%;margin-top:14px;padding:14px" onclick="A.sellOne()">Mark as sold</button>
   ${!b ? `<button class="ghost" style="width:100%;margin-top:8px" onclick="A.reserveOne()">${ICON.clock}Book for this customer with advance</button>` : ''}`;
 }
@@ -162,7 +164,7 @@ function photoStrip(l) {
   const thumb = u => u.replace('/upload/', '/upload/c_fill,w_220,h_220,q_auto,f_auto/');
   const canDel = isMgr() && ps.length;
   return `${canDel ? `<div class="phhead"><a class="link" onclick="A.photoEdit()">${photoEdit ? 'Done' : 'Edit photos'}</a></div>` : ''}<div class="photos${photoEdit && canDel ? ' editing' : ''}">${ps.map((u, i) => `<a class="ph" onclick="A.viewPhoto(${i})"><img src="${esc(thumb(u))}" alt="Photo ${i + 1} of ${esc(l.code)}" loading="lazy">${photoEdit && canDel ? `<button class="phx" onclick="event.stopPropagation();A.delPhoto(${i})" aria-label="Delete photo ${i + 1}">✕</button>` : ''}</a>`).join('')}
-  <label class="addph">${ICON.cam}<span>${ps.length ? 'Add' : 'Add photos'}</span><input type="file" accept="image/*" multiple style="display:none" onchange="A.addPhotos(this.files);this.value=''"></label></div>`;
+  <button type="button" class="addph" onclick="A.addPhotoMenu()">${ICON.cam}<span>${ps.length ? 'Add' : 'Add photos'}</span></button></div>`;
 }
 function shrink(file, max = 1600, q = 0.8) {
   return new Promise((res, rej) => { const i = new Image(); i.onload = () => { const s = Math.min(1, max / Math.max(i.width, i.height)), c = document.createElement('canvas'); c.width = i.width * s; c.height = i.height * s; c.getContext('2d').drawImage(i, 0, 0, c.width, c.height); c.toBlob(b => b ? res(b) : rej(new Error('Could not read the photo')), 'image/jpeg', q); URL.revokeObjectURL(i.src); }; i.onerror = () => rej(new Error('Could not read the photo')); i.src = URL.createObjectURL(file); });
@@ -184,7 +186,7 @@ export const actions = {
     let l;
     try { l = await laptopByCode(code); } catch (e) { return toast(navigator.onLine ? e.message : 'You are offline and this laptop is not saved on this phone.'); }
     if (!l) return toast('No laptop has the code ' + code);
-    A.stopScan(); cur = l.code; resvSell = false; editSpecs = false; photoEdit = false; mtab = pickTab(l);
+    A.stopScan(); cur = l.code; resvSell = false; editSpecs = false; photoEdit = false; mtab = pickTab(l); resetPicker('h');
     openModalWith();
   },
   rerender(force) { if (cur && sheetOpen() && (force || !dirty)) { if (!L()) return; render(); } },
@@ -243,8 +245,9 @@ export const actions = {
     await guard(async () => {
       const r = b ? await sellCall('complete_booking', { p_booking_id: b.id, ...args }) : await sellCall('sell_laptop', { p_laptop_id: l.id, ...args });
       if (!r) return;
+      const accMsg = await giveWithSale('h', r.sale_id ? { p_sale_id: r.sale_id } : { p_sale_id: (await read('get_laptop', { p_code: l.code }))?.sale?.id }, args.p_method);
       resvSell = false; mtab = 'hand';
-      await after(`Sold${r.invoice_no ? `, bill INV-${r.invoice_no}` : ''}${r.balance > 0 ? `, balance ${rs(r.balance)}` : ''}${r.exchange_code ? `. Exchange laptop is ${r.exchange_code}` : ''}`);
+      await after(`Sold${accMsg}${r.invoice_no ? `, bill INV-${r.invoice_no}` : ''}${r.balance > 0 ? `, balance ${rs(r.balance)}` : ''}${r.exchange_code ? `. Exchange laptop is ${r.exchange_code}` : ''}`);
     });
   },
   completeSale() { resvSell = true; render(); },
@@ -332,6 +335,15 @@ export const actions = {
       } catch (e) { toast('Upload failed: ' + (e.message || 'check internet and Cloudinary settings')); break; }
     }
     if (n) await after(`${n} photo${n > 1 ? 's' : ''} saved`);
+  },
+  // ----- photos: add (camera or gallery), view full size, delete (admin and co-admin) -----
+  addPhotoMenu() {
+    const l = L(); if (!l) return;
+    const pickJs = "const f=[...this.files];document.getElementById('dlgno').click();A.addPhotos(f)";
+    dialog({ title: 'Add laptop photo', body: `${esc(l.code)}, ${esc(lapName(l))}`, noOk: true, cancel: 'Close',
+      html: `<div class="photo2"><label class="pbtn navy">📷 Camera<small>Snap a photo now</small><input id="phcam" type="file" accept="image/*" capture="environment" onchange="${pickJs}"></label>
+        <label class="pbtn blue">🖼 Gallery<small>Choose saved photos</small><input id="phgal" type="file" accept="image/*" multiple onchange="${pickJs}"></label></div>
+        <p class="muted photohint">Photos are shrunk before upload to save space</p>` });
   },
   // ----- photos: view full size, delete (admin and co-admin) -----
   photoEdit() { photoEdit = !photoEdit; render(); },

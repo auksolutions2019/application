@@ -6,6 +6,7 @@ import { S, load, isAdmin, isMgr, role } from '../api/store.js';
 import { read, write } from '../api/client.js';
 import { lapName, PROCS, RAMS } from '../ui/specs.js';
 import { printStickers } from '../ui/print.js';
+import { accessoriesView, accPicker, giveWithSale } from './accessories.js';
 import { status, lapRow, owned, atService, ageDays, oldDays, testsPassed, matches, LEADS, noteLine, thumb } from './common.js';
 
 let stockTab = 'lots', stockQ = '', stockF = 'all', openLot = null, spec = { processor: '', ram: '', storage: '' };
@@ -64,6 +65,7 @@ function lotDetail(b) {
   <label>Laptop warranty</label>${chips('lwar', [['0', 'None'], ['3', '3 months'], ['6', '6 months'], ['12', '12 months']], String([0, 3, 6, 12].includes(S.d.settings.default_warranty_months) ? S.d.settings.default_warranty_months : 0))}
   <label>Charger and battery warranty</label>${chips('lacc', [['0', 'None'], ['6', '6 months'], ['12', '12 months']], String([0, 6, 12].includes(S.d.settings.accessory_warranty_months) ? S.d.settings.accessory_warranty_months : 0))}
   <p class="muted" style="margin-top:6px">Mobile is needed for a warranty or if money is still due. One bill for all ticked laptops.</p>
+  ${accPicker('l')}
   <button style="width:100%;margin-top:14px" onclick="A.sellLot()">Sell ticked laptops</button>` : ''}</div>`;
 }
 
@@ -93,8 +95,8 @@ export const views = {
   stock() {
     if (!S.d.suppliers.filter(s => s.code !== '00').length && isAdmin() && !S.d.lots.some(x => x.kind !== 'exchange'))
       return empty(ICON.truck, 'Add a supplier first', 'Every lot is linked to a supplier number like 01 or 02.', 'Add supplier', "A.go('suppliers');setTimeout(A.formSupplier,50)");
-    const seg = `<div class="seg"><button class="${stockTab === 'lots' ? 'on' : ''}" onclick="A.stockTab('lots')">Lots</button><button class="${stockTab === 'laps' ? 'on' : ''}" onclick="A.stockTab('laps')">All laptops</button></div>`;
-    return seg + (stockTab === 'laps' ? laptopsView() : lotsView());
+    const seg = `<div class="seg"><button class="${stockTab === 'lots' ? 'on' : ''}" onclick="A.stockTab('lots')">Lots</button><button class="${stockTab === 'laps' ? 'on' : ''}" onclick="A.stockTab('laps')">All laptops</button><button class="${stockTab === 'acc' ? 'on' : ''}" onclick="A.stockTab('acc')">Accessories</button></div>`;
+    return seg + (stockTab === 'laps' ? laptopsView() : stockTab === 'acc' ? accessoriesView() : lotsView());
   }
 };
 
@@ -103,6 +105,7 @@ export function showLot(id) { openLot = id; stockTab = 'lots'; }
 
 export const actions = {
   stockTab(t) { stockTab = t; A.refresh(); },
+  showAccessories() { stockTab = 'acc'; if (A.view() !== 'stock') A.go('stock'); else A.refresh(); },
   stockFilter(k) { stockTab = 'laps'; stockF = k; if (A.view() !== 'stock') A.go('stock'); else A.refresh(); },
   setSpecF(k, v) { spec[k] = v; A.refresh(); },
   stockSearch(v) { stockQ = v; clearTimeout(window._sq); window._sq = setTimeout(() => { A.refresh(); setTimeout(() => { const e = $('sq'); if (e) { e.focus(); e.setSelectionRange(e.value.length, e.value.length); } }, 30); }, 250); },
@@ -181,8 +184,9 @@ export const actions = {
         if (!await confirmBox('Not every test has passed', esc(e.message), 'Sell anyway', 1)) return;
         r = await write('sell_laptops_bulk', { ...args, p_override_tests: true });
       }
+      const accMsg = await giveWithSale('l', { p_bulk_group: r.bulk_group }, args.p_method);
       await load();
-      toast(`${r.count} laptops sold on bill INV-${r.invoice_no}. Total ${rs(r.total)}, balance ${rs(r.balance)}`, 'ok');
+      toast(`${r.count} laptops sold on bill INV-${r.invoice_no}. Total ${rs(r.total)}, balance ${rs(r.balance)}${accMsg}`, 'ok');
     });
   }
 };

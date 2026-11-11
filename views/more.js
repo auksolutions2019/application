@@ -2,7 +2,7 @@
 import { $, esc, rs, fmtD, tag, sum, stat, chips, chipVal, val, num, todayIN, enc, dec, MON } from '../ui/dom.js';
 import { ICON } from '../ui/icons.js';
 import { toast, empty, openSheet, sheetHead, closeModal, confirmBox, dialog, guard, METHODS } from '../ui/feedback.js';
-import { S, load, isAdmin, isMgr, role } from '../api/store.js';
+import { S, load, isAdmin, isMgr, role, askPhoneAlerts } from '../api/store.js';
 import { read, write, fn, client } from '../api/client.js';
 import { lapName } from '../ui/specs.js';
 import { onShelf, testsPassed, noteLine, cloudThumb } from './common.js';
@@ -16,7 +16,7 @@ export const views = {
     const mgr = isMgr(), adm = isAdmin();
     return `<div class="card more">${mgr ? it('money', 'cash', "Today's money", 'Cash, UPI and bank in and out for any day') : ''}${it('share', 'share', 'Share stock list', 'Ready-made WhatsApp message of what is available')}${it('prices', 'tag', 'Model prices', 'Usual selling price for each model')}${it('partners', 'tool', 'Service partners', 'Technicians and repair shops, laptops with them')}</div>
     ${mgr ? `<div class="card more">${it('reports', 'chart', 'Reports', 'Sales, profit, lead sources and graphs by month and year')}${it('suppliers', 'truck', 'Suppliers', adm ? 'Supplier numbers and what you owe each one' : 'Supplier numbers and repair quality')}${adm ? it('debts', 'wallet', 'Liabilities', 'Supplier and service dues, rent, loans and borrowed money') + it('shopexp', 'cash', 'Shop expenses', 'Rent, electricity, salaries and other running costs') + it('lotpnl', 'list', 'Lot P&L', 'Cost, sales and profit of each lot') : ''}${it('activity', 'list', 'Activity', 'Who did what, and when')}</div>` : ''}
-    <div class="card more">${adm ? it('users', 'user', 'Users', 'Add people, change roles, reset PINs') + it('settings', 'gear', 'Settings', 'Shop details, warranty and photo storage') + it('backup', 'cloud', 'Backup and import', 'Download, restore, bring in the Excel or old app data') + it('deleted', 'trash', 'Recently deleted', 'Laptops, lots, suppliers, partners and photos deleted in the last 30 days') : ''}${it('pin', 'key', 'Change my PIN', 'Your 6-digit login PIN')}</div>`;
+    <div class="card more">${adm ? it('users', 'user', 'Users', 'Add people, change roles, reset PINs') + it('settings', 'gear', 'Settings', 'Shop details, warranty and photo storage') + it('backup', 'cloud', 'Backup and import', 'Download, restore, bring in the Excel or old app data') + it('deleted', 'trash', 'Recently deleted', 'Laptops, lots, suppliers, partners and photos deleted in the last 30 days') : ''}${it('pin', 'key', 'Change my PIN', 'Your 6-digit login PIN')}<a onclick="A.logout()">${ICON.out}<span>Log out<small>You will need your PIN to log in again</small></span></a></div>`;
   },
 
   // Recently deleted (admin): the last 30 days, with Restore. Older ones are removed for good by the daily cleanup.
@@ -35,6 +35,18 @@ export const views = {
         ${extra(x) ? `<div class="muted" style="margin-top:2px">${extra(x)}</div>` : ''}</div>
       <div class="cr">${x.can_restore ? `<button class="sm" onclick="A.restoreDeleted('${x.id}')">Restore</button>` : ''}</div></div>`).join('')
       : empty(ICON.trash, 'Nothing deleted', 'Items you delete stay here for 30 days, so a mistake can be undone.')}</div>`;
+  },
+
+  // Notifications (🔔 in the top bar): newest first, unread highlighted; read state is per person.
+  async notifs() {
+    const list = await read('my_notifications');
+    const IC = { low_stock: '📦', service_overdue: '🔧', balance_pending: '₹', held_advance: '⏳' };
+    const when = n => n.kind === 'low_stock' ? '' : fmtD(n.at.slice(0, 10));
+    return `<div class="list notifs">${list.length ? list.map(n => `<div class="crow nrow${n.read ? '' : ' unread'}" onclick="A.openNotif('${n.id}','${n.link_kind || ''}','${esc(n.link_id || '')}')">
+      <div class="av sq nic ${n.kind}">${IC[n.kind] || '🔔'}</div>
+      <div class="cm"><b>${esc(n.title)}</b><div class="muted">${[esc(n.body), when(n)].filter(Boolean).join(', ')}</div></div></div>`).join('')
+      : empty(ICON.bell, 'No notifications', 'You get one when an accessory runs low, a laptop is late back from service, a balance is pending over 30 days, or an advance is waiting.')}</div>
+    ${list.some(n => !n.read) ? '<button class="ghost" style="width:100%;margin-top:12px;min-height:48px" onclick="A.markAllRead()">Mark all as read</button>' : ''}`;
   },
 
   async money() {
@@ -209,6 +221,17 @@ export const actions = {
   async saveShopExp() {
     const a = num('seamt'); if (!a) return toast('Enter the amount');
     await guard(async () => { await write('add_shop_expense', { p_type: chipVal('setype'), p_amount: a, p_method: chipVal('semeth'), p_ref: val('seref'), p_note: val('senote'), p_spent_on: val('sedate') || null }); closeModal(); await load(); toast('Saved', 'ok'); });
+  },
+  openNotifs() { askPhoneAlerts(); A.go('notifs'); },
+  async openNotif(id, kind, link) {
+    write('mark_notifications_read', { p_ids: [id] }).then(async () => { S.unread = await read('notifications_check'); A.setBell(); }).catch(() => {});
+    if (kind === 'accessory') { A.showAccessories(); setTimeout(() => A.openAccessory(link), 250); }
+    else if (kind === 'laptop' && link) A.openLaptop(link);
+    else if (kind === 'held') A.go('home');
+    else A.refresh();
+  },
+  async markAllRead() {
+    await guard(async () => { await write('mark_notifications_read', {}); S.unread = 0; A.setBell(); A.refresh(); toast('All marked as read', 'ok'); });
   },
   async restoreDeleted(id) {
     await guard(async () => { const r = await write('restore_deleted', { p_deletion_id: id }); await load(); A.refresh(); toast(`Restored: ${r.label}`, 'ok'); });

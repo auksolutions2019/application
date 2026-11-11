@@ -26,6 +26,7 @@ export const views = {
     ${kpi('Total Revenue', rs(yS), yS, r.prev.sales, '↗', '#e8f1ff', '#1e6fe8', repYear)}
     ${kpi('Laptops Sold', yN.toLocaleString('en-IN'), yN, r.prev.n, '💻', '#e5f6ec', '#17924f', repYear)}
     ${adm ? kpi('Gross Profit', rs(yG), yG, r.prev.gross, '₹', '#eef0ff', '#0f1f3d', repYear) : ''}
+    <div class="grid">${stat('Accessory sales', rs(sum(months, x => +x.acc_sales || 0)))}${adm ? stat('Accessory profit', rs(sum(months, x => +x.acc_profit || 0))) : ''}</div>
     ${adm ? `<div class="grid">${stat('Shop expenses', rs(sum(months, x => x.shop)))}${stat('Warranty repairs', rs(sum(months, x => x.warranty)))}${stat('Net profit', rs(yNet))}</div>` : ''}
     ${missing ? `<p class="warnmark" style="margin:0 0 12px">${missing} sold laptop${missing > 1 ? 's have' : ' has'} cost missing, so profit leaves them out</p>` : ''}
     <div class="card chart"><div class="chead"><h3 style="margin:0">Earnings trend</h3><span class="muted">${repYear}</span></div>
@@ -37,7 +38,7 @@ export const views = {
     ${adm ? `<div class="card chart"><div class="chead"><h3 style="margin:0">Gross profit by month</h3><span class="big">${rs(yG)}</span></div>
     ${barChart(months.map(x => ({ k: x.mn.slice(0, 3), v: +x.gross, tip: tip(x) })), '#0f1f3d')}</div>
     <div class="card chart"><div class="chead"><h3 style="margin:0">Net profit by month</h3><span class="big">${rs(yNet)}</span></div>
-    ${barChart(months.map(x => ({ k: x.mn.slice(0, 3), v: +x.net, tip: tip(x) })), '#0F9D6B')}<p class="muted" style="margin-top:8px">Net = gross profit − shop expenses − warranty repairs.</p></div>` : ''}
+    ${barChart(months.map(x => ({ k: x.mn.slice(0, 3), v: +x.net, tip: tip(x) })), '#0F9D6B')}<p class="muted" style="margin-top:8px">Net = gross profit + accessory profit − shop expenses − warranty repairs.</p></div>` : ''}
     <div class="card"><div class="chead"><h3 style="margin:0">Money collected</h3><span class="big">${cPct}%</span></div>
     ${yS ? `<div class="split"><div style="flex:${r.collected};background:var(--blue)"></div>${r.pending ? `<div style="flex:${r.pending};background:var(--red)"></div>` : ''}</div>
     <div class="legend"><span><i style="background:var(--blue)"></i>Collected ${rs(r.collected)}</span><span><i style="background:var(--red)"></i>Pending ${rs(r.pending)}</span></div>` : '<p class="muted">No sales this year yet.</p>'}</div>

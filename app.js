@@ -9,6 +9,7 @@ import { S, load, onChange, startSync, stopSync, role } from './api/store.js';
 import * as home from './views/home.js';
 import * as stock from './views/stock.js';
 import * as addlot from './views/addlot.js';
+import * as accessories from './views/accessories.js';
 import * as scan from './views/scan.js';
 import * as laptop from './views/laptop.js';
 import * as people from './views/people.js';
@@ -18,13 +19,13 @@ import * as reports from './views/reports.js';
 import * as backup from './views/backup.js';
 
 const { $, esc } = dom;
-const mods = [home, stock, addlot, scan, laptop, people, service, more, reports, backup];
+const mods = [home, stock, addlot, accessories, scan, laptop, people, service, more, reports, backup];
 const VIEWS = Object.assign({}, ...mods.map(m => m.views || {}));
 
 const TITLES = { home: 'Home', scan: 'Scan sticker', stock: 'Stock', sales: 'Customers', more: 'More', suppliers: 'Suppliers',
   debts: 'Liabilities', reports: 'Reports', backup: 'Backup and import', share: 'Share stock', prices: 'Model prices',
   money: "Today's money", activity: 'Activity', settings: 'Settings', partners: 'Service partners', shopexp: 'Shop expenses',
-  lotpnl: 'Lot P&L', users: 'Users', pin: 'Change my PIN', deleted: 'Recently deleted' };
+  lotpnl: 'Lot P&L', users: 'Users', pin: 'Change my PIN', deleted: 'Recently deleted', notifs: 'Notifications' };
 // Who may open which screen (the database enforces the same rules)
 const ACCESS = { sales: 'mgr', suppliers: 'mgr', money: 'mgr', reports: 'mgr', activity: 'mgr',
   debts: 'admin', settings: 'admin', backup: 'admin', shopexp: 'admin', lotpnl: 'admin', users: 'admin', deleted: 'admin' };
@@ -122,7 +123,7 @@ function notYou() { forgetMobile(); showLogin(); }
 
 async function start() {
   $('login').classList.add('hidden'); $('app').classList.remove('hidden');
-  $('outbtn').innerHTML = ICON.out;
+  $('bellbtn').innerHTML = ICON.bell + '<span id="bellcount" class="hidden"></span>';
   $('main').innerHTML = '<p class="muted" style="padding:30px;text-align:center">Loading…</p>';
   try { await load(); }
   catch (e) { if (e.code === '28000') return showLogin('Please log in again.'); $('main').innerHTML = `<div class="card"><p class="muted">${esc(e.message)}</p><button style="margin-top:10px" onclick="location.reload()">Try again</button></div>`; return; }
@@ -130,6 +131,8 @@ async function start() {
   setOffline();
   startSync(on => $('syncdot').classList.toggle('off', !on));
   // Opened by sharing a photo into the app: read its QR on the Scan screen
+  setBell();
+  if (new URLSearchParams(location.search).has('notifs')) { history.replaceState(null, '', location.pathname); go('notifs'); return; }
   if (new URLSearchParams(location.search).has('shared')) {
     history.replaceState(null, '', location.pathname);
     go('scan'); setTimeout(() => scan.actions.takeShared(), 300);
@@ -153,12 +156,20 @@ addEventListener('offline', setOffline);
 
 // ---------- wire up ----------
 window.A = Object.assign({}, dom, fb, ...mods.map(m => m.actions || {}),
-  { go, refresh, logout, doLogin, notYou, view: () => view });
-onChange(() => { setOffline(); refresh(); });
+  { go, refresh, logout, doLogin, notYou, view: () => view, setBell });
+onChange(() => { setOffline(); refresh(); setBell(); });
+// 🔔 count of unread notifications (kept by store.js)
+function setBell() {
+  const c = $('bellcount'); if (!c) return;
+  const n = S.unread || 0;
+  c.textContent = n > 99 ? '99+' : String(n); c.classList.toggle('hidden', !n);
+  $('bellbtn').setAttribute('aria-label', n ? `Notifications, ${n} unread` : 'Notifications');
+}
 setAuthLostHandler(() => showLogin('Please log in again.'));
 initTips();
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
   navigator.serviceWorker.register('sw.js').catch(() => {});
+  navigator.serviceWorker.addEventListener('message', e => { if (e.data?.type === 'open-notifs' && !$('app').classList.contains('hidden')) go('notifs'); });
 }
 (async () => {
   if (configured() && await hasSession().catch(() => false)) start(); else showLogin();

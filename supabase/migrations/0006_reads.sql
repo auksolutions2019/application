@@ -27,7 +27,11 @@ language sql stable set search_path = '' as $$
     'bulk_group', s.bulk_group, 'status', s.status, 'invoice_no', s.invoice_no, 'warranty_token', s.warranty_token,
     'bill_date', coalesce((select i.issued_on from public.invoices i where i.no = s.invoice_no), s.sold_on),
     'payments', private.payments_json(s.id),
-    'paid', private.sale_paid(s.id), 'due', s.price - private.sale_paid(s.id))
+    'paid', private.sale_paid(s.id), 'due', s.price - private.sale_paid(s.id),
+    'accessories', coalesce((select jsonb_agg(jsonb_build_object('name', a.name, 'qty', -m.delta, 'amount', m.amount, 'free', m.free, 'method', m.method)
+                                              order by m.created_at)
+                             from public.accessory_moves m join public.accessories a on a.id = m.accessory_id
+                             where m.sale_id = s.id and m.kind = 'out'), '[]'))
   || case when p_role = 'admin' then jsonb_build_object('profit', private.profit(s.id)) else '{}'::jsonb end
   from public.sales s left join public.customers c on c.id = s.customer_id
   where s.id = p_sale
@@ -188,6 +192,7 @@ begin
                          from private.live_laptops l where not private.is_old_sold(l.id)), '[]'),
     'hidden_sold', (select count(*) from private.live_laptops l where private.is_old_sold(l.id)),
     'prices', coalesce((select jsonb_object_agg(shorthand, price) from public.model_prices), '{}'),
+    'accessories', coalesce((select jsonb_agg(private.accessory_json(a.id, r) order by lower(a.name)) from private.live_accessories a), '[]'),
     'debts', case when r <> 'admin' then '[]'::jsonb else
              coalesce((select jsonb_agg(jsonb_build_object('id', d.id, 'name', d.name, 'type', d.type, 'amount', d.amount,
                          'due_on', d.due_on,
@@ -319,7 +324,12 @@ begin
         union all
         select bp.amount, bp.method, private.cust_label(b.customer_name, b.lead_source) || ' (advance), ' || l.code, bp.note, bp.id, 'booking_payment'
         from public.booking_payments bp join public.bookings b on b.id = bp.booking_id join private.live_laptops l on l.id = b.laptop_id
-        where bp.paid_on = p_date) x), '[]'),
+        where bp.paid_on = p_date
+        union all
+        select m.amount, m.method, 'Accessory: ' || (-m.delta) || ' × ' || a.name || case when m.customer <> '' then ', ' || m.customer else '' end,
+               m.note, null::uuid, null
+        from public.accessory_moves m join public.accessories a on a.id = m.accessory_id
+        where m.moved_on = p_date and m.kind = 'out' and m.amount > 0) x), '[]'),
     'outs', coalesce((select jsonb_agg(x) from (
         select r.amount amt, 'Cash' m, 'Repair on ' || l.code || ': ' || r.work t, '' n, null::uuid id, null k
         from public.repairs r join private.live_laptops l on l.id = r.laptop_id
@@ -343,7 +353,11 @@ begin
           from public.shop_expenses se where se.spent_on = p_date and se.deleted_at is null
           union all
           select vp.amount, vp.method, 'Service: ' || private.partner_label(vp.partner_id), vp.note, vp.id, 'service_payment'
-          from public.service_payments vp where vp.paid_on = p_date) b
+          from public.service_payments vp where vp.paid_on = p_date
+          union all
+          select round(c.unit_cost * m.delta, 2), m.method, 'Accessory stock: ' || m.delta || ' × ' || a.name, m.note, m.id, null
+          from public.accessory_moves m join public.accessory_move_costs c on c.move_id = m.id join public.accessories a on a.id = m.accessory_id
+          where m.moved_on = p_date and m.kind = 'in' and m.method is not null and c.unit_cost > 0) b
         group by b.m, case when adm then b.t else 'Business payments (by admin)' end, case when adm then b.k end
         union all
         select f.amount, f.method, coalesce(nullif(f.label, ''), 'Refund'), f.note, f.id, 'refund' from public.refunds f where f.refunded_on = p_date) x), '[]'));
@@ -390,8 +404,15 @@ begin
              sum(c.charge) filter (where j.kind = 'warranty') warranty_amt
       from public.service_jobs j join public.service_charges c on c.job_id = j.id
       where j.received_on between d0 and d1 group by 1
+    ), acc as (   -- accessories sold or given: money in, and cost at the average purchase cost
+      select extract(month from m.moved_on)::int m, sum(m.amount) sales,
+             sum(m.amount - (-m.delta) * private.acc_avg_cost(m.accessory_id)) profit,
+             count(*) filter (where private.acc_avg_cost(m.accessory_id) is null) cost_missing
+      from public.accessory_moves m where m.kind = 'out' and m.moved_on between d0 and d1 group by 1
     ), months as (
       select g m,
+             coalesce((select sales from acc where acc.m = g), 0) acc_sales,
+             coalesce((select profit from acc where acc.m = g), 0) acc_profit,
              (select count(*) from sold where sold.m = g) n,
              (select coalesce(sum(price), 0) from sold where sold.m = g) sales,
              (select coalesce(sum(profit), 0) from sold where sold.m = g) gross,
@@ -407,11 +428,12 @@ begin
                   select extract(year from private.today())::int y
                   union select distinct year from private.live_lots
                   union select distinct extract(year from sold_on)::int from public.sales where status = 'active') ys),
-      'months', (select jsonb_agg(jsonb_build_object('m', m, 'n', n, 'sales', sales)
+      'months', (select jsonb_agg(jsonb_build_object('m', m, 'n', n, 'sales', sales, 'acc_sales', acc_sales)
                    -- stock service charges are already inside gross (laptop cost); warranty repairs come off net
                    || case when adm then jsonb_build_object('gross', round(gross, 2), 'cost_missing', cost_missing,
                                                             'shop', shop, 'service_stock', service_stock, 'warranty', warranty,
-                                                            'net', round(gross - shop - warranty, 2)) else '{}'::jsonb end
+                                                            'acc_profit', round(acc_profit, 2),
+                                                            'net', round(gross + acc_profit - shop - warranty, 2)) else '{}'::jsonb end
                    order by m) from months),
       'prev', jsonb_build_object('n', (select count(*) from prev), 'sales', (select coalesce(sum(price), 0) from prev))
               || case when adm then jsonb_build_object('gross', (select round(coalesce(sum(profit), 0), 2) from prev)) else '{}'::jsonb end,

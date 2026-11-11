@@ -18,7 +18,7 @@ export function toast(msg, kind = 'err') {
 let lastMethod = 'Cash';
 // Small centred dialog. Resolves true/false; for amount dialogs {amount, method, ref} or null; for text dialogs the text or null.
 export function dialog({ title, body = '', ok = 'OK', danger = false, amount = false, max = null, text = false,
-                         allowZero = false, method = true, ref = true, note = true, placeholder = '', value = '', html = '' }) {
+                         allowZero = false, method = true, ref = true, note = true, placeholder = '', value = '', html = '', noOk = false, cancel = 'Cancel' }) {
   return new Promise(res => {
     const d = $('dlg');
     d.innerHTML = `<div class="dbox"><h3>${title}</h3>${body ? `<p class="muted" style="margin-bottom:6px">${body}</p>` : ''}
@@ -29,12 +29,13 @@ export function dialog({ title, body = '', ok = 'OK', danger = false, amount = f
       ${note ? `<input id="dlgnote" placeholder="Note (optional)" maxlength="300" autocomplete="off" style="margin-top:6px">` : ''}` : ''}
     ${html}
     ${text ? `<input id="dlgv" style="margin-top:8px" autocomplete="off" maxlength="300" placeholder="${esc(placeholder)}" value="${esc(value)}">` : ''}
-    <div class="row" style="margin-top:16px"><button class="ghost" id="dlgno">Cancel</button><button id="dlgok" class="${danger ? 'red' : ''}">${ok}</button></div></div>`;
+    <div class="row" style="margin-top:16px"><button class="ghost" id="dlgno">${cancel}</button>${noOk ? '' : `<button id="dlgok" class="${danger ? 'red' : ''}">${ok}</button>`}</div></div>`;
     d.classList.remove('hidden');
     const v = $('dlgv');
     if (v) setTimeout(() => v.focus(), 60);
     const done = r => { d.classList.add('hidden'); d.innerHTML = ''; res(r); };
     $('dlgno').onclick = () => done(amount || text ? null : false);
+    if (noOk) return;
     $('dlgok').onclick = () => {
       if (amount) {
         const n = +v.value;

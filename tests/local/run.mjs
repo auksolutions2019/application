@@ -646,6 +646,84 @@ ok(!(await rpc(U.admin, 'recently_deleted')).some(x => x.id === delOldDel.deleti
    'after 30 days: gone from Recently deleted, cannot be restored');
 eq(+(await one(`select count(*) n from public.photos where id = $1`, [delPh.photo_ids[1]])).n, 0, 'after 30 days the photo row is removed');
 
+console.log('\nAccessories and notifications');
+{
+  // a fresh staff login (the earlier one was aged past 7 days on purpose)
+  const ST = { ...U.staff, sess: '10000000-0000-0000-0000-0000000000cc' };
+  await db.query('update public.profiles set active = true where id = $1', [ST.id]);
+  await db.query('insert into public.app_sessions (session_id, user_id) values ($1, $2) on conflict do nothing', [ST.sess, ST.id]);
+  const accErr = async (u, fn, a) => (await rpcErr(u, fn, a))?.message || '';
+  const lowCount = async id => +(await one(`select count(*) n from public.notifications where kind = 'low_stock' and link_id = $1`, [id])).n;
+  ok(await rpcErr(ST, 'add_accessory', { p_name: 'Mouse' }), 'staff cannot add an accessory');
+  const kb = await rpc(U.coadmin, 'add_accessory', { p_name: 'Keyboard, USB', p_opening: 10, p_alert: 2, p_cost: 250, p_price: 400 });
+  const accOf = async u => (await rpc(u, 'get_snapshot')).accessories.find(a => a.id === kb.id);
+  eq((await accOf(U.admin)).qty, 10, 'opening stock 10');
+  eq(+(await accOf(U.admin)).cost, 250, 'admin sees the cost (₹250 each)');
+  const staffKb = await accOf(ST), coKb = await accOf(U.coadmin);
+  ok(staffKb.qty === 10 && !('cost' in staffKb) && !('avg_cost' in staffKb), 'staff sees the quantity, not the cost');
+  ok(!('cost' in coKb), 'co-admin entered the cost but cannot see it');
+  ok(+(await as(ST, `select count(*) n from public.accessory_move_costs`)).rows[0].n === 0, 'RLS: staff cannot read accessory costs directly');
+  // sell 8 → 2 left, one notification
+  await rpc(ST, 'accessory_out', { p_id: kb.id, p_qty: 3, p_price_each: 400, p_customer: 'Shahid' });
+  eq(await lowCount(kb.id), 0, 'no notification while above the alert number (7 left)');
+  await rpc(ST, 'accessory_out', { p_id: kb.id, p_qty: 5, p_price_each: 400, p_customer: 'Shahid' });
+  eq((await accOf(U.admin)).qty, 2, 'sell 8 → 2 left');
+  eq(await lowCount(kb.id), 1, 'one low-stock notification at the alert number');
+  const nt = await one(`select title, body from public.notifications where kind = 'low_stock' and link_id = $1`, [kb.id]);
+  ok(nt.title === 'Keyboard, USB: only 2 left' && /After the sale to Shahid/.test(nt.body), 'notification: "Keyboard, USB: only 2 left", after the sale to Shahid', JSON.stringify(nt));
+  await rpc(ST, 'accessory_out', { p_id: kb.id, p_qty: 1, p_free: true });
+  eq(await lowCount(kb.id), 1, 'not again on the next sale (once per crossing)');
+  // never below 0
+  ok(/Only 1 Keyboard, USB left/.test(await accErr(ST, 'accessory_out', { p_id: kb.id, p_qty: 2 })), "can't sell more than in stock");
+  ok(/cannot go below 0/.test(await accErr(U.admin, 'accessory_adjust', { p_id: kb.id, p_delta: -2, p_reason: 'Damaged' })), "an adjustment can't go below 0 either");
+  ok(await db.query(`insert into public.accessory_moves (accessory_id, kind, delta) values ($1, 'out', -5)`, [kb.id]).then(() => false, () => true), 'the database itself refuses a negative count');
+  ok(await rpcErr(ST, 'accessory_adjust', { p_id: kb.id, p_delta: 1, p_reason: 'Found' }), 'staff cannot adjust');
+  ok(await db.query(`update public.accessory_moves set delta = 1 where accessory_id = $1`, [kb.id]).then(() => false, () => true), 'movements are never edited');
+  // back above the alert, then down again → a second notification
+  await rpc(U.coadmin, 'accessory_in', { p_id: kb.id, p_qty: 10, p_cost_each: 260, p_supplier_id: null });
+  await rpc(ST, 'accessory_out', { p_id: kb.id, p_qty: 9, p_price_each: 400 });
+  eq(await lowCount(kb.id), 2, 'after restocking, the next drop notifies again');
+  eq(+(await one(`select sum(delta) q from public.accessory_moves where accessory_id = $1`, [kb.id])).q, (await accOf(U.admin)).qty, 'the count is the sum of the movements');
+  // with a laptop sale (bill lines), money and reports
+  const accSale = await one(`select s.id from public.sales s where s.status = 'active' order by s.created_at desc limit 1`);
+  await rpc(U.coadmin, 'accessory_in', { p_id: kb.id, p_qty: 5 });
+  await rpc(ST, 'give_accessories', { p_sale_id: accSale.id, p_items: [{ id: kb.id, qty: 1, price_each: 450 }], p_free: false, p_method: 'UPI' });
+  const saleAcc = (await rpc(U.admin, 'get_snapshot')).laptops.find(l => l.sale?.id === accSale.id)?.sale.accessories || [];
+  ok(saleAcc.length === 1 && saleAcc[0].qty === 1 && +saleAcc[0].amount === 450 && saleAcc[0].free === false, 'accessory given with a sale shows on that sale (for the bill)', JSON.stringify(saleAcc));
+  const md = await rpc(U.admin, 'money_day', { p_date: today });
+  ok(md.ins.some(x => /Accessory: 1 × Keyboard, USB/.test(x.t) && +x.amt === 450 && x.m === 'UPI'), "accessory sale is in Today's money");
+  ok(md.outs.some(x => /Accessory stock: 10 × Keyboard, USB/.test(x.t) && +x.amt === 2600), "accessory purchase is in Today's money (admin)");
+  ok(!(await rpc(U.coadmin, 'money_day', { p_date: today })).outs.some(x => /Accessory stock/.test(x.t)), 'co-admin does not see accessory costs in money');
+  const ry = await rpc(U.admin, 'report_year', { p_year: +today.slice(0, 4) }), mo = ry.months[+today.slice(5, 7) - 1];
+  ok(+mo.acc_sales === 400 * 8 + 400 * 9 + 450 && mo.acc_profit != null, 'reports: accessory sales and profit (admin)', JSON.stringify({ s: mo.acc_sales, p: mo.acc_profit }));
+  ok(!('acc_profit' in (await rpc(U.coadmin, 'report_year', { p_year: +today.slice(0, 4) })).months[0]), 'co-admin sees accessory sales, not profit');
+  // notifications: read state per user
+  const nA = await rpc(U.admin, 'my_notifications'), nS = await rpc(ST, 'my_notifications');
+  ok(nA.some(n => n.kind === 'low_stock' && !n.read) && nS.some(n => n.kind === 'low_stock' && !n.read), 'admin and staff both see the low-stock notification, unread');
+  const before = await rpc(ST, 'notifications_check');
+  await rpc(U.admin, 'mark_notifications_read', {});
+  ok(await rpc(U.admin, 'notifications_check') === 0 && await rpc(ST, 'notifications_check') === before && before > 0, 'mark all as read is per user (staff still has unread)');
+  const one1 = nS.find(n => n.kind === 'low_stock');
+  await rpc(ST, 'mark_notifications_read', { p_ids: [one1.id] });
+  ok((await rpc(ST, 'my_notifications')).find(n => n.id === one1.id).read && await rpc(ST, 'notifications_check') === before - 1, 'one notification marked read');
+  ok(!(await rpc(ST, 'my_notifications')).some(n => n.kind === 'balance_pending' || n.kind === 'held_advance'), 'staff does not get money notifications');
+  // calendar notifications: overdue service, old balance
+  await db.query(`update public.service_jobs set expected_on = $1::date - 3 where status = 'out'`, [today]);
+  await db.query(`update public.sales set sold_on = $1::date - 40 where id = (select s.id from public.sales s where s.status = 'active' and s.price > (select coalesce(sum(amount),0) from public.sale_payments where sale_id = s.id) limit 1)`, [today]);
+  const nA2 = await rpc(U.admin, 'my_notifications');
+  ok(nA2.some(n => n.kind === 'service_overdue' && /past the expected date/.test(n.title)), 'laptop at a service partner past its date: notified');
+  ok(nA2.some(n => n.kind === 'balance_pending' && /pending 40 days/.test(n.title)), 'balance pending over 30 days: notified');
+  const cnt = (await one(`select count(*) n from public.notifications`)).n;
+  await rpc(U.admin, 'my_notifications');
+  eq((await one(`select count(*) n from public.notifications`)).n, cnt, 'the same event is never notified twice');
+  // delete and restore
+  ok(await rpcErr(U.coadmin, 'delete_accessory', { p_id: kb.id }), 'co-admin cannot delete an accessory');
+  const dk = await rpc(U.admin, 'delete_accessory', { p_id: kb.id });
+  ok(!(await rpc(U.admin, 'get_snapshot')).accessories.some(a => a.id === kb.id), 'deleted accessory leaves the list');
+  await rpc(U.admin, 'restore_deleted', { p_deletion_id: dk.deletion_id });
+  ok((await rpc(U.admin, 'get_snapshot')).accessories.some(a => a.id === kb.id), 'and comes back with Restore');
+}
+
 console.log('\nBackup and restore');
 ok(await rpcErr(U.coadmin, 'export_backup'), 'only the admin can download a backup');
 const counts = async () => (await one(`select (select count(*) from public.laptops) l, (select count(*) from public.sales) s,

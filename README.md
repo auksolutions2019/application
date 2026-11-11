@@ -33,11 +33,11 @@ Setup takes about 30 minutes. Do the steps in this order.
 
 1. Open **SQL Editor**, then **New query**.
 2. Open `supabase/setup_all.sql` from this repo, copy **all** of it, paste it in, and click **Run**.
-3. The last result shows two numbers: `tables` and `tables_with_rls_on`. They must be the same (34 and 34). That means every table has its access rules on.
+3. The last result shows two numbers: `tables` and `tables_with_rls_on`. They must be the same (39 and 39). That means every table has its access rules on.
 
-**If the SQL Editor says the query is too big:** use the three parts instead. Paste `supabase/setup_part1.sql` into a new query and click **Run**. Do the same with `setup_part2.sql`, then `setup_part3.sql`, each in a new query, in that order. Part 3 ends with the same check (34 and 34). Together they are exactly the same SQL as `setup_all.sql`.
+**If the SQL Editor says the query is too big:** use the three parts instead. Paste `supabase/setup_part1.sql` into a new query and click **Run**. Do the same with `setup_part2.sql`, then `setup_part3.sql`, each in a new query, in that order. Part 3 ends with the same check (39 and 39). Together they are exactly the same SQL as `setup_all.sql`.
 
-**After an app update that changes the database:** run the setup again (all of it, or the three parts). It upgrades the existing database and keeps all data.
+**After an app update that changes the database** (for example the accessories and notifications update): run the setup again (all of it, or the three parts). It upgrades the existing database and keeps all data.
 
 The file is safe to run again; every step checks first. Do not edit it by hand: it is built from `supabase/migrations/` with `node tools/build-setup.mjs`.
 

@@ -2829,6 +2829,211 @@ create policy staff_edit on public.laptops for update to authenticated
   using (private.is_user() and deleted_at is null) with check (private.is_user() and deleted_at is null);
 
 -- ---------------------------------------------------------------------
+-- 0005b_accessories.sql
+-- ---------------------------------------------------------------------
+-- 0005b: accessories (chargers, mice, keyboards, bags…) and notifications. Safe to run twice.
+-- The count of an accessory is always the sum of its stock movements (in / out / adjust); it never goes below 0.
+-- Costs are admin only (separate table), like laptop costs.
+
+create table if not exists public.accessories (
+  id          uuid primary key default gen_random_uuid(),
+  name        text not null check (length(btrim(name)) between 1 and 80),
+  alert_at    int  not null default 2 check (alert_at between 0 and 9999),
+  price       numeric(12,2) check (price is null or price >= 0),          -- usual selling price (everyone sees it)
+  low_alerted boolean not null default false,                              -- a low-stock notification was made for this dip
+  deleted_at  timestamptz,
+  deleted_by  uuid references public.profiles(id),
+  created_by  uuid references public.profiles(id) default auth.uid(),
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
+);
+create unique index if not exists accessories_name_uniq on public.accessories (lower(btrim(name))) where deleted_at is null;
+
+-- Every change in stock. delta > 0 for in, < 0 for out, either for adjust. Never edited or deleted.
+create table if not exists public.accessory_moves (
+  id           uuid primary key default gen_random_uuid(),
+  accessory_id uuid not null references public.accessories(id),
+  kind         text not null check (kind in ('in','out','adjust')),
+  delta        int  not null check (delta <> 0),
+  amount       numeric(12,2) not null default 0 check (amount >= 0),       -- out: money received (0 = free)
+  free         boolean not null default false,
+  method       text check (method in ('Cash','UPI','Bank')),                -- how the money moved (sale or purchase)
+  supplier_id  uuid references public.suppliers(id),
+  sale_id      uuid references public.sales(id),                            -- given with this laptop sale
+  customer     text not null default '',
+  mobile       text not null default '',
+  reason       text not null default '',                                    -- adjust: Damaged, Lost, Found, Count correction…
+  note         text not null default '' check (length(note) <= 300),
+  moved_on     date not null default private.today(),
+  created_by   uuid references public.profiles(id) default auth.uid(),
+  created_at   timestamptz not null default now(),
+  updated_at   timestamptz not null default now(),
+  check ((kind = 'in' and delta > 0) or (kind = 'out' and delta < 0) or kind = 'adjust'),
+  check (kind = 'out' or amount = 0)
+);
+create index if not exists accessory_moves_acc_idx on public.accessory_moves (accessory_id);
+create index if not exists accessory_moves_on_idx on public.accessory_moves (moved_on);
+create index if not exists accessory_moves_sale_idx on public.accessory_moves (sale_id);
+
+-- Admin only: what each unit cost on a purchase (an "in" movement). No row = cost not entered.
+create table if not exists public.accessory_move_costs (
+  move_id    uuid primary key references public.accessory_moves(id),
+  unit_cost  numeric(12,2) not null check (unit_cost >= 0),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+-- Notifications: one row per event; read state per user. audience: who may see it.
+create table if not exists public.notifications (
+  id         uuid primary key default gen_random_uuid(),
+  kind       text not null check (kind in ('low_stock','service_overdue','balance_pending','held_advance')),
+  key        text not null unique,                        -- stops the same event being notified twice
+  title      text not null,
+  body       text not null default '',
+  link_kind  text,                                        -- accessory, laptop, held
+  link_id    text,
+  audience   text not null default 'all' check (audience in ('all','mgr','admin')),
+  created_at timestamptz not null default now()
+);
+create index if not exists notifications_created_idx on public.notifications (created_at desc);
+
+create table if not exists public.notification_reads (
+  notification_id uuid not null references public.notifications(id) on delete cascade,
+  user_id         uuid not null references public.profiles(id),
+  read_at         timestamptz not null default now(),
+  created_at      timestamptz not null default now(),   -- backups sort every table by created_at
+  primary key (notification_id, user_id)
+);
+alter table public.notification_reads add column if not exists created_at timestamptz not null default now();
+
+-- Recently deleted can hold accessories too
+alter table private.deletions drop constraint if exists deletions_kind_check;
+alter table private.deletions add constraint deletions_kind_check check (kind in ('laptop','lot','supplier','partner','photo','accessory'));
+
+create or replace view private.live_accessories as select * from public.accessories where deleted_at is null;
+
+-- ---------- triggers ----------
+do $$
+declare t text;
+begin
+  foreach t in array array['accessories','accessory_moves','accessory_move_costs'] loop
+    execute format('drop trigger if exists touch on public.%I', t);
+    execute format('create trigger touch before update on public.%I for each row execute function private.touch()', t);
+  end loop;
+end $$;
+-- Movements are history: never changed or deleted (like payments)
+drop trigger if exists no_edit on public.accessory_moves;
+create trigger no_edit before update or delete on public.accessory_moves for each row execute function private.no_edit();
+drop trigger if exists guard_deleted on public.accessories;
+create trigger guard_deleted before update on public.accessories for each row execute function private.guard_deleted_row();
+
+-- Current count
+create or replace function private.acc_qty(p_acc uuid) returns int
+language sql stable set search_path = '' as $$
+  select coalesce(sum(delta), 0)::int from public.accessory_moves where accessory_id = p_acc
+$$;
+
+-- Never below 0 (checked after every movement, so it also holds if two phones sell at once)
+create or replace function private.acc_not_negative() returns trigger
+language plpgsql set search_path = '' as $$
+declare q int; n text;
+begin
+  q := private.acc_qty(new.accessory_id);
+  if q < 0 then
+    select name into n from public.accessories where id = new.accessory_id;
+    raise exception 'Only % % left. Stock cannot go below 0.', q - new.delta, n;
+  end if;
+  return null;
+end $$;
+drop trigger if exists not_negative on public.accessory_moves;
+create constraint trigger not_negative after insert on public.accessory_moves deferrable initially immediate
+  for each row execute function private.acc_not_negative();
+
+-- Low stock: one notification each time the count drops to the alert number or below (not on every sale).
+-- It re-arms when stock goes back above the alert number.
+create or replace function private.acc_check_low(p_acc uuid, p_after text default '') returns void
+language plpgsql security definer set search_path = '' as $$
+declare a public.accessories; q int;
+begin
+  select * into a from public.accessories where id = p_acc;
+  if not found or a.deleted_at is not null then return; end if;
+  q := private.acc_qty(p_acc);
+  if q <= a.alert_at and not a.low_alerted then
+    insert into public.notifications (kind, key, title, body, link_kind, link_id, audience)
+    values ('low_stock', 'low:' || p_acc || ':' || extract(epoch from clock_timestamp())::text,
+            format('%s: only %s left', a.name, q),
+            concat_ws(', ', nullif(p_after, ''), to_char(now() at time zone 'Asia/Kolkata', 'DD/MM/YYYY, FMHH12:MI am')),
+            'accessory', p_acc::text, 'all');
+    update public.accessories set low_alerted = true where id = p_acc;
+  elsif q > a.alert_at and a.low_alerted then
+    update public.accessories set low_alerted = false where id = p_acc;
+  end if;
+end $$;
+
+create or replace function private.acc_moves_after() returns trigger
+language plpgsql security definer set search_path = '' as $$
+begin
+  perform private.acc_check_low(new.accessory_id,
+    case when new.kind = 'out' and new.customer <> '' then 'After the sale to ' || new.customer
+         when new.kind = 'out' then 'After a sale' when new.kind = 'adjust' then 'After an adjustment' else '' end);
+  return null;
+end $$;
+drop trigger if exists check_low on public.accessory_moves;
+create trigger check_low after insert on public.accessory_moves for each row execute function private.acc_moves_after();
+
+create or replace function private.acc_alert_changed() returns trigger
+language plpgsql security definer set search_path = '' as $$
+begin
+  perform private.acc_check_low(new.id, 'Alert number changed');
+  return null;
+end $$;
+drop trigger if exists alert_changed on public.accessories;
+create trigger alert_changed after update of alert_at on public.accessories for each row
+  when (new.alert_at is distinct from old.alert_at) execute function private.acc_alert_changed();
+
+-- Every phone refreshes when a notification is made
+drop trigger if exists tick on public.notifications;
+create trigger tick after insert on public.notifications for each row execute function private.tick();
+
+-- ---------- activity log ----------
+create or replace function private.log_accessory_moves() returns trigger
+language plpgsql security definer set search_path = '' as $$
+declare n text;
+begin
+  select name into n from public.accessories where id = new.accessory_id;
+  perform private.log('accessory', 'accessory', new.accessory_id::text,
+    case new.kind
+      when 'in' then format('Added %s × %s to stock%s', new.delta, n, private.note_suffix(new.note))
+      when 'out' then format('%s %s × %s%s%s%s', case when new.free then 'Gave' else 'Sold' end, -new.delta, n,
+                             case when new.customer <> '' then ' to ' || new.customer else '' end,
+                             case when new.free then ' free' when new.amount > 0 then ' for ' || private.rs(new.amount) else '' end,
+                             private.note_suffix(new.note))
+      else format('Adjusted %s by %s%s (%s)', n, case when new.delta > 0 then '+' else '' end || new.delta, '', coalesce(nullif(new.reason, ''), 'no reason'))
+    end);
+  return null;
+end $$;
+drop trigger if exists log_ins on public.accessory_moves;
+create trigger log_ins after insert on public.accessory_moves for each row execute function private.log_accessory_moves();
+
+-- ---------- row level security (the app reads through RPCs; these are a second lock) ----------
+do $$
+declare t text;
+begin
+  foreach t in array array['accessories','accessory_moves','accessory_move_costs','notifications','notification_reads'] loop
+    execute format('alter table public.%I enable row level security', t);
+  end loop;
+end $$;
+grant select on public.accessories, public.accessory_moves to authenticated;
+drop policy if exists user_read on public.accessories;
+create policy user_read on public.accessories for select to authenticated using (private.is_user() and deleted_at is null);
+drop policy if exists user_read on public.accessory_moves;
+create policy user_read on public.accessory_moves for select to authenticated using (private.is_user());
+grant select on public.accessory_move_costs to authenticated;
+drop policy if exists admin_read on public.accessory_move_costs;
+create policy admin_read on public.accessory_move_costs for select to authenticated using (private.is_admin());
+-- notifications and their read state: only through the RPCs (no policy = no direct access)
+
+-- ---------------------------------------------------------------------
 -- 0006_reads.sql
 -- ---------------------------------------------------------------------
 -- 0006: read functions. Each returns only what the caller's role may see.
@@ -2860,7 +3065,11 @@ language sql stable set search_path = '' as $$
     'bulk_group', s.bulk_group, 'status', s.status, 'invoice_no', s.invoice_no, 'warranty_token', s.warranty_token,
     'bill_date', coalesce((select i.issued_on from public.invoices i where i.no = s.invoice_no), s.sold_on),
     'payments', private.payments_json(s.id),
-    'paid', private.sale_paid(s.id), 'due', s.price - private.sale_paid(s.id))
+    'paid', private.sale_paid(s.id), 'due', s.price - private.sale_paid(s.id),
+    'accessories', coalesce((select jsonb_agg(jsonb_build_object('name', a.name, 'qty', -m.delta, 'amount', m.amount, 'free', m.free, 'method', m.method)
+                                              order by m.created_at)
+                             from public.accessory_moves m join public.accessories a on a.id = m.accessory_id
+                             where m.sale_id = s.id and m.kind = 'out'), '[]'))
   || case when p_role = 'admin' then jsonb_build_object('profit', private.profit(s.id)) else '{}'::jsonb end
   from public.sales s left join public.customers c on c.id = s.customer_id
   where s.id = p_sale
@@ -3021,6 +3230,7 @@ begin
                          from private.live_laptops l where not private.is_old_sold(l.id)), '[]'),
     'hidden_sold', (select count(*) from private.live_laptops l where private.is_old_sold(l.id)),
     'prices', coalesce((select jsonb_object_agg(shorthand, price) from public.model_prices), '{}'),
+    'accessories', coalesce((select jsonb_agg(private.accessory_json(a.id, r) order by lower(a.name)) from private.live_accessories a), '[]'),
     'debts', case when r <> 'admin' then '[]'::jsonb else
              coalesce((select jsonb_agg(jsonb_build_object('id', d.id, 'name', d.name, 'type', d.type, 'amount', d.amount,
                          'due_on', d.due_on,
@@ -3152,7 +3362,12 @@ begin
         union all
         select bp.amount, bp.method, private.cust_label(b.customer_name, b.lead_source) || ' (advance), ' || l.code, bp.note, bp.id, 'booking_payment'
         from public.booking_payments bp join public.bookings b on b.id = bp.booking_id join private.live_laptops l on l.id = b.laptop_id
-        where bp.paid_on = p_date) x), '[]'),
+        where bp.paid_on = p_date
+        union all
+        select m.amount, m.method, 'Accessory: ' || (-m.delta) || ' × ' || a.name || case when m.customer <> '' then ', ' || m.customer else '' end,
+               m.note, null::uuid, null
+        from public.accessory_moves m join public.accessories a on a.id = m.accessory_id
+        where m.moved_on = p_date and m.kind = 'out' and m.amount > 0) x), '[]'),
     'outs', coalesce((select jsonb_agg(x) from (
         select r.amount amt, 'Cash' m, 'Repair on ' || l.code || ': ' || r.work t, '' n, null::uuid id, null k
         from public.repairs r join private.live_laptops l on l.id = r.laptop_id
@@ -3176,7 +3391,11 @@ begin
           from public.shop_expenses se where se.spent_on = p_date and se.deleted_at is null
           union all
           select vp.amount, vp.method, 'Service: ' || private.partner_label(vp.partner_id), vp.note, vp.id, 'service_payment'
-          from public.service_payments vp where vp.paid_on = p_date) b
+          from public.service_payments vp where vp.paid_on = p_date
+          union all
+          select round(c.unit_cost * m.delta, 2), m.method, 'Accessory stock: ' || m.delta || ' × ' || a.name, m.note, m.id, null
+          from public.accessory_moves m join public.accessory_move_costs c on c.move_id = m.id join public.accessories a on a.id = m.accessory_id
+          where m.moved_on = p_date and m.kind = 'in' and m.method is not null and c.unit_cost > 0) b
         group by b.m, case when adm then b.t else 'Business payments (by admin)' end, case when adm then b.k end
         union all
         select f.amount, f.method, coalesce(nullif(f.label, ''), 'Refund'), f.note, f.id, 'refund' from public.refunds f where f.refunded_on = p_date) x), '[]'));
@@ -3223,8 +3442,15 @@ begin
              sum(c.charge) filter (where j.kind = 'warranty') warranty_amt
       from public.service_jobs j join public.service_charges c on c.job_id = j.id
       where j.received_on between d0 and d1 group by 1
+    ), acc as (   -- accessories sold or given: money in, and cost at the average purchase cost
+      select extract(month from m.moved_on)::int m, sum(m.amount) sales,
+             sum(m.amount - (-m.delta) * private.acc_avg_cost(m.accessory_id)) profit,
+             count(*) filter (where private.acc_avg_cost(m.accessory_id) is null) cost_missing
+      from public.accessory_moves m where m.kind = 'out' and m.moved_on between d0 and d1 group by 1
     ), months as (
       select g m,
+             coalesce((select sales from acc where acc.m = g), 0) acc_sales,
+             coalesce((select profit from acc where acc.m = g), 0) acc_profit,
              (select count(*) from sold where sold.m = g) n,
              (select coalesce(sum(price), 0) from sold where sold.m = g) sales,
              (select coalesce(sum(profit), 0) from sold where sold.m = g) gross,
@@ -3240,11 +3466,12 @@ begin
                   select extract(year from private.today())::int y
                   union select distinct year from private.live_lots
                   union select distinct extract(year from sold_on)::int from public.sales where status = 'active') ys),
-      'months', (select jsonb_agg(jsonb_build_object('m', m, 'n', n, 'sales', sales)
+      'months', (select jsonb_agg(jsonb_build_object('m', m, 'n', n, 'sales', sales, 'acc_sales', acc_sales)
                    -- stock service charges are already inside gross (laptop cost); warranty repairs come off net
                    || case when adm then jsonb_build_object('gross', round(gross, 2), 'cost_missing', cost_missing,
                                                             'shop', shop, 'service_stock', service_stock, 'warranty', warranty,
-                                                            'net', round(gross - shop - warranty, 2)) else '{}'::jsonb end
+                                                            'acc_profit', round(acc_profit, 2),
+                                                            'net', round(gross + acc_profit - shop - warranty, 2)) else '{}'::jsonb end
                    order by m) from months),
       'prev', jsonb_build_object('n', (select count(*) from prev), 'sales', (select coalesce(sum(price), 0) from prev))
               || case when adm then jsonb_build_object('gross', (select round(coalesce(sum(profit), 0), 2) from prev)) else '{}'::jsonb end,
@@ -3324,7 +3551,8 @@ create or replace function private.backup_tables() returns text[] language sql i
   select array['settings','suppliers','lots','lot_lines','lot_line_costs','laptops','laptop_costs','laptop_tests',
     'lot_expenses','repairs','photos','customers','bookings','booking_payments','invoices','sales','sale_payments','returns',
     'refunds','supplier_payments','debts','debt_payments','shop_expenses','model_prices','service_partners',
-    'service_jobs','service_charges','service_payments','activity_log']
+    'service_jobs','service_charges','service_payments','activity_log',
+    'accessories','accessory_moves','accessory_move_costs','notifications','notification_reads']
 $$;
 
 create or replace function public.export_backup()
@@ -4050,7 +4278,9 @@ begin
   perform set_config('app.purging', 'on', true);
   for d in select * from private.deletions where restored_at is null and purged_at is null
              and deleted_at < now() - interval '30 days' for update skip locked loop
-    if d.kind = 'photo' then
+    if d.kind = 'accessory' then
+      null;   -- the accessory stays hidden (its stock history is kept)
+    elsif d.kind = 'photo' then
       delete from public.photos where id = d.item_id and deleted_at is not null;
     elsif d.kind = 'supplier' then
       delete from public.suppliers s where s.id = d.item_id and s.deleted_at is not null
@@ -4124,6 +4354,13 @@ begin
   elsif d.kind = 'supplier' then
     update public.suppliers set deleted_at = null, deleted_by = null where id = d.item_id returning code || ', ' || name into v_code;
     perform private.log('restore', 'supplier', d.item_id::text, format('Restored supplier %s', v_code));
+  elsif d.kind = 'accessory' then
+    if exists (select 1 from public.accessories x join public.accessories y on lower(btrim(y.name)) = lower(btrim(x.name))
+               where x.id = d.item_id and y.id <> x.id and y.deleted_at is null) then
+      raise exception 'Another accessory with this name exists now. Rename or delete it first.';
+    end if;
+    update public.accessories set deleted_at = null, deleted_by = null where id = d.item_id returning name into v_code;
+    perform private.log('restore', 'accessory', d.item_id::text, format('Restored accessory %s', v_code));
   elsif d.kind = 'partner' then
     update public.service_partners set deleted_at = null, deleted_by = null where id = d.item_id;
     perform private.log('restore', 'partner', d.item_id::text, format('Restored service partner %s', private.partner_label(d.item_id)));
@@ -4144,6 +4381,287 @@ create or replace function public.ping() returns text
 language plpgsql volatile security definer set search_path = '' as $$
 begin
   perform private.purge_deleted();
+  return 'ok ' || (select count(*) from public.settings)::text;
+end $$;
+
+-- ---------------------------------------------------------------------
+-- 0008c_accessories_rpc.sql
+-- ---------------------------------------------------------------------
+-- 0008c: accessories (add, stock in, sell or give, adjust, delete) and notifications. Safe to run twice.
+-- Who may do what: staff sell or give and see quantities; co-admin also adds stock, adjusts and edits (never sees cost);
+-- admin everything, including costs, profit and delete.
+
+-- Average cost of one unit (purchases with a cost entered). Admin only, used for profit.
+create or replace function private.acc_avg_cost(p_acc uuid) returns numeric
+language sql stable set search_path = '' as $$
+  select round(sum(c.unit_cost * m.delta) / nullif(sum(m.delta), 0), 2)
+  from public.accessory_moves m join public.accessory_move_costs c on c.move_id = m.id
+  where m.accessory_id = p_acc and m.kind = 'in'
+$$;
+create or replace function private.acc_last_cost(p_acc uuid) returns numeric
+language sql stable set search_path = '' as $$
+  select c.unit_cost from public.accessory_moves m join public.accessory_move_costs c on c.move_id = m.id
+  where m.accessory_id = p_acc and m.kind = 'in' order by m.created_at desc limit 1
+$$;
+
+create or replace function private.accessory_json(p_acc uuid, p_role text) returns jsonb
+language sql stable set search_path = '' as $$
+  select jsonb_build_object('id', a.id, 'name', a.name, 'qty', private.acc_qty(a.id), 'alert_at', a.alert_at, 'price', a.price,
+                            'low', private.acc_qty(a.id) <= a.alert_at)
+  || case when p_role = 'admin' then jsonb_build_object('cost', private.acc_last_cost(a.id), 'avg_cost', private.acc_avg_cost(a.id)) else '{}'::jsonb end
+  from public.accessories a where a.id = p_acc
+$$;
+
+create or replace function private.acc_lock(p_acc uuid) returns public.accessories
+language plpgsql set search_path = '' as $$
+declare a public.accessories;
+begin
+  select * into a from public.accessories where id = p_acc for update;
+  if not found or a.deleted_at is not null then raise exception 'Accessory not found'; end if;
+  return a;
+end $$;
+
+-- ---------- add / edit ----------
+create or replace function public.add_accessory(p_name text, p_opening int default 0, p_alert int default 2,
+  p_cost numeric default null, p_price numeric default null, p_client_ref uuid default null)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare v jsonb; v_id uuid; v_move uuid; r text := private.require_manager();
+begin
+  v := private.idem_get(p_client_ref); if v is not null then return v; end if;
+  if btrim(coalesce(p_name, '')) = '' then raise exception 'Enter the name'; end if;
+  if coalesce(p_opening, 0) < 0 then raise exception 'Opening stock cannot be below 0'; end if;
+  if exists (select 1 from public.accessories where lower(btrim(name)) = lower(btrim(p_name)) and deleted_at is null) then
+    raise exception '% is already in the list. Tap it to add stock.', btrim(p_name);
+  end if;
+  insert into public.accessories (name, alert_at, price) values (btrim(p_name), greatest(coalesce(p_alert, 2), 0), p_price)
+  returning id into v_id;
+  if coalesce(p_opening, 0) > 0 then
+    insert into public.accessory_moves (accessory_id, kind, delta, note) values (v_id, 'in', p_opening, 'Opening stock') returning id into v_move;
+    if p_cost is not null then insert into public.accessory_move_costs (move_id, unit_cost) values (v_move, p_cost); end if;
+  else
+    perform private.acc_check_low(v_id, 'Added with no stock');
+  end if;
+  v := jsonb_build_object('id', v_id);
+  return private.idem_put(p_client_ref, v);
+end $$;
+
+create or replace function public.save_accessory(p_id uuid, p_name text, p_alert int, p_price numeric default null)
+returns void language plpgsql security definer set search_path = '' as $$
+declare a public.accessories;
+begin
+  perform private.require_manager();
+  a := private.acc_lock(p_id);
+  if btrim(coalesce(p_name, '')) = '' then raise exception 'Enter the name'; end if;
+  if exists (select 1 from public.accessories where lower(btrim(name)) = lower(btrim(p_name)) and deleted_at is null and id <> p_id) then
+    raise exception '% is already in the list.', btrim(p_name);
+  end if;
+  update public.accessories set name = btrim(p_name), alert_at = greatest(coalesce(p_alert, a.alert_at), 0), price = p_price where id = p_id;
+end $$;
+
+-- ---------- movements ----------
+-- New stock bought (admin, co-admin). Cost is optional; only the admin ever sees it.
+create or replace function public.accessory_in(p_id uuid, p_qty int, p_cost_each numeric default null, p_supplier_id uuid default null,
+  p_on date default null, p_method text default 'Cash', p_note text default '', p_client_ref uuid default null)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare v jsonb; v_move uuid;
+begin
+  perform private.require_manager();
+  v := private.idem_get(p_client_ref); if v is not null then return v; end if;
+  perform private.acc_lock(p_id);
+  if coalesce(p_qty, 0) < 1 then raise exception 'Enter how many'; end if;
+  if p_cost_each is not null and p_cost_each < 0 then raise exception 'Check the cost'; end if;
+  if coalesce(p_on, private.today()) > private.today() then raise exception 'The date cannot be in the future'; end if;
+  insert into public.accessory_moves (accessory_id, kind, delta, method, supplier_id, note, moved_on)
+  values (p_id, 'in', p_qty, case when p_cost_each is null then null else coalesce(p_method, 'Cash') end, p_supplier_id,
+          left(btrim(coalesce(p_note, '')), 300), coalesce(p_on, private.today()))
+  returning id into v_move;
+  if p_cost_each is not null then insert into public.accessory_move_costs (move_id, unit_cost) values (v_move, p_cost_each); end if;
+  v := jsonb_build_object('qty', private.acc_qty(p_id));
+  return private.idem_put(p_client_ref, v);
+end $$;
+
+create or replace function private.acc_out(p_id uuid, p_qty int, p_price_each numeric, p_free boolean, p_method text,
+  p_customer text, p_mobile text, p_note text, p_sale uuid) returns void
+language plpgsql set search_path = '' as $$
+declare a public.accessories; q int; v_amt numeric;
+begin
+  a := private.acc_lock(p_id);
+  if coalesce(p_qty, 0) < 1 then raise exception 'Enter how many'; end if;
+  q := private.acc_qty(p_id);
+  if p_qty > q then raise exception 'Only % % left.', q, a.name; end if;
+  v_amt := case when coalesce(p_free, false) then 0 else round(coalesce(p_price_each, a.price, 0) * p_qty, 2) end;
+  if v_amt < 0 then raise exception 'Check the price'; end if;
+  insert into public.accessory_moves (accessory_id, kind, delta, amount, free, method, sale_id, customer, mobile, note)
+  values (p_id, 'out', -p_qty, v_amt, coalesce(p_free, false) or v_amt = 0, case when v_amt > 0 then coalesce(p_method, 'Cash') end,
+          p_sale, btrim(coalesce(p_customer, '')), regexp_replace(coalesce(p_mobile, ''), '\D', '', 'g'), left(btrim(coalesce(p_note, '')), 300));
+end $$;
+
+-- Sell or give (everyone, staff included)
+create or replace function public.accessory_out(p_id uuid, p_qty int, p_price_each numeric default null, p_free boolean default false,
+  p_method text default 'Cash', p_customer text default '', p_mobile text default '', p_note text default '', p_client_ref uuid default null)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare v jsonb;
+begin
+  perform private.require_user();
+  v := private.idem_get(p_client_ref); if v is not null then return v; end if;
+  perform private.acc_out(p_id, p_qty, p_price_each, p_free, p_method, p_customer, p_mobile, p_note, null);
+  v := jsonb_build_object('qty', private.acc_qty(p_id));
+  return private.idem_put(p_client_ref, v);
+end $$;
+
+-- Accessories given with a laptop sale (single sale, or the bulk sale it belongs to).
+-- p_items: [{"id": "...", "qty": 2, "price_each": 400}]. Free: no charge; otherwise the money is received now.
+create or replace function public.give_accessories(p_sale_id uuid default null, p_bulk_group uuid default null, p_items jsonb default '[]',
+  p_free boolean default true, p_method text default 'Cash', p_client_ref uuid default null)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare v jsonb; s public.sales; x jsonb; v_inv text;
+begin
+  perform private.require_user();
+  v := private.idem_get(p_client_ref); if v is not null then return v; end if;
+  select * into s from public.sales where status = 'active'
+    and (id = p_sale_id or (p_bulk_group is not null and bulk_group = p_bulk_group)) order by created_at limit 1;
+  if not found then raise exception 'Sale not found'; end if;
+  if jsonb_typeof(p_items) is distinct from 'array' or jsonb_array_length(p_items) = 0 then raise exception 'Pick the accessories'; end if;
+  v_inv := case when s.invoice_no is not null then 'INV-' || s.invoice_no else '' end;
+  -- lock in a fixed order, so two phones never wait on each other
+  for x in select * from jsonb_array_elements(p_items) e order by e ->> 'id' loop
+    perform private.acc_out((x ->> 'id')::uuid, (x ->> 'qty')::int, (x ->> 'price_each')::numeric, p_free, p_method,
+                            private.cust_label(s.customer_name, s.lead_source), coalesce((select mobile from public.customers where id = s.customer_id), ''),
+                            case when v_inv <> '' then 'With laptop sale ' || v_inv else 'With laptop sale' end, s.id);
+  end loop;
+  v := jsonb_build_object('sale_id', s.id);
+  return private.idem_put(p_client_ref, v);
+end $$;
+
+-- Damaged, lost, found, count correction (admin, co-admin). Needs a reason.
+create or replace function public.accessory_adjust(p_id uuid, p_delta int, p_reason text, p_note text default '', p_client_ref uuid default null)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare v jsonb; a public.accessories;
+begin
+  perform private.require_manager();
+  v := private.idem_get(p_client_ref); if v is not null then return v; end if;
+  a := private.acc_lock(p_id);
+  if coalesce(p_delta, 0) = 0 then raise exception 'Enter how many to add or take off'; end if;
+  if btrim(coalesce(p_reason, '')) = '' then raise exception 'Choose a reason'; end if;
+  if private.acc_qty(p_id) + p_delta < 0 then raise exception 'Only % % left. Stock cannot go below 0.', private.acc_qty(p_id), a.name; end if;
+  insert into public.accessory_moves (accessory_id, kind, delta, reason, note)
+  values (p_id, 'adjust', p_delta, left(btrim(p_reason), 60), left(btrim(coalesce(p_note, '')), 300));
+  v := jsonb_build_object('qty', private.acc_qty(p_id));
+  return private.idem_put(p_client_ref, v);
+end $$;
+
+-- Last movements of one accessory (who, when, note). Money only for admin and co-admin, cost only for admin.
+create or replace function public.accessory_moves_list(p_id uuid)
+returns jsonb language plpgsql stable security definer set search_path = '' as $$
+declare r text := private.require_user();
+begin
+  return coalesce((select jsonb_agg(jsonb_build_object('id', m.id, 'kind', m.kind, 'delta', m.delta, 'on', m.moved_on, 'at', m.created_at,
+      'by', coalesce((select name from public.profiles where id = m.created_by), 'Someone'),
+      'customer', m.customer, 'free', m.free, 'reason', m.reason, 'note', m.note,
+      'supplier', (select name from public.suppliers where id = m.supplier_id))
+    || case when r <> 'staff' then jsonb_build_object('amount', m.amount, 'method', m.method) else '{}'::jsonb end
+    || case when r = 'admin' then jsonb_build_object('unit_cost', (select unit_cost from public.accessory_move_costs where move_id = m.id)) else '{}'::jsonb end
+    order by m.created_at desc)
+    from (select * from public.accessory_moves where accessory_id = p_id order by created_at desc limit 60) m), '[]');
+end $$;
+
+-- Delete (admin): soft delete, in Recently deleted for 30 days. The movements stay in the history.
+create or replace function public.delete_accessory(p_id uuid)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare a public.accessories; v_del uuid;
+begin
+  perform private.require_admin();
+  a := private.acc_lock(p_id);
+  update public.accessories set deleted_at = now(), deleted_by = auth.uid() where id = p_id;
+  insert into private.deletions (kind, item_id, label, deleted_by)
+  values ('accessory', p_id, format('Accessory %s (%s left)', a.name, private.acc_qty(p_id)), auth.uid()) returning id into v_del;
+  perform private.log('delete', 'accessory', p_id::text, format('Deleted accessory %s', a.name));
+  return jsonb_build_object('deletion_id', v_del);
+end $$;
+
+-- ---------- notifications ----------
+-- Events that come from the calendar (not from one action): made when the app loads and by the daily ping.
+create or replace function private.refresh_notifications() returns void
+language plpgsql security definer set search_path = '' as $$
+declare v_today date := private.today();
+begin
+  -- laptops with a service partner past the expected date
+  insert into public.notifications (kind, key, title, body, link_kind, link_id, audience)
+  select 'service_overdue', 'svc:' || j.id,
+         format('%s at %s: %s day%s past the expected date', l.code, private.partner_label(j.partner_id),
+                v_today - j.expected_on, case when v_today - j.expected_on = 1 then '' else 's' end),
+         format('Given on %s, expected back %s', to_char(j.given_on, 'DD/MM/YYYY'), to_char(j.expected_on, 'DD/MM/YYYY')),
+         'laptop', l.code, 'all'
+  from public.service_jobs j join public.laptops l on l.id = j.laptop_id
+  where j.status = 'out' and j.expected_on < v_today
+  on conflict (key) do nothing;
+  -- customer balances pending over 30 days
+  insert into public.notifications (kind, key, title, body, link_kind, link_id, audience)
+  select 'balance_pending', 'due:' || s.id,
+         format('%s: %s pending %s days', private.cust_label(s.customer_name, s.lead_source), private.rs(s.price - private.sale_paid(s.id)), v_today - s.sold_on),
+         format('Sold %s on %s', l.code, to_char(s.sold_on, 'DD/MM/YYYY')), 'laptop', l.code, 'mgr'
+  from public.sales s join public.laptops l on l.id = s.laptop_id
+  where s.status = 'active' and s.sold_on <= v_today - 30 and s.price - private.sale_paid(s.id) > 0
+  on conflict (key) do nothing;
+  -- advances held after a cancelled booking, waiting for the admin or co-admin
+  insert into public.notifications (kind, key, title, body, link_kind, link_id, audience)
+  select 'held_advance', 'held:' || b.id,
+         format('Advance of %s held for %s', private.rs((select sum(amount) from public.booking_payments where booking_id = b.id)),
+                private.cust_label(b.customer_name, b.lead_source)),
+         format('Booking of %s was cancelled. Keep or refund the advance.', l.code), 'held', l.code, 'mgr'
+  from public.bookings b join public.laptops l on l.id = b.laptop_id
+  where b.advance_status = 'held'
+  on conflict (key) do nothing;
+end $$;
+
+create or replace function private.notif_visible(p_audience text, p_role text) returns boolean
+language sql immutable set search_path = '' as $$
+  select p_audience = 'all' or (p_audience = 'mgr' and p_role in ('admin','coadmin')) or (p_audience = 'admin' and p_role = 'admin')
+$$;
+
+-- Makes the calendar notifications, then returns how many are unread for this user.
+create or replace function public.notifications_check()
+returns int language plpgsql security definer set search_path = '' as $$
+declare r text := private.require_user();
+begin
+  perform private.refresh_notifications();
+  return (select count(*) from public.notifications n
+          where private.notif_visible(n.audience, r) and n.created_at > now() - interval '60 days'
+            and not exists (select 1 from public.notification_reads x where x.notification_id = n.id and x.user_id = auth.uid()))::int;
+end $$;
+
+create or replace function public.my_notifications()
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare r text := private.require_user();
+begin
+  perform private.refresh_notifications();
+  return coalesce((select jsonb_agg(jsonb_build_object('id', n.id, 'kind', n.kind, 'title', n.title, 'body', n.body,
+      'link_kind', n.link_kind, 'link_id', n.link_id, 'at', n.created_at,
+      'read', exists (select 1 from public.notification_reads x where x.notification_id = n.id and x.user_id = auth.uid()))
+    order by n.created_at desc)
+    from (select * from public.notifications where private.notif_visible(audience, r) and created_at > now() - interval '60 days'
+          order by created_at desc limit 100) n), '[]');
+end $$;
+
+-- p_ids null = all of this user's notifications
+create or replace function public.mark_notifications_read(p_ids uuid[] default null)
+returns int language plpgsql security definer set search_path = '' as $$
+declare r text := private.require_user(); n int;
+begin
+  insert into public.notification_reads (notification_id, user_id)
+  select id, auth.uid() from public.notifications
+  where private.notif_visible(audience, r) and (p_ids is null or id = any (p_ids))
+  on conflict do nothing;
+  get diagnostics n = row_count;
+  return n;
+end $$;
+
+-- The daily keep-alive also makes the calendar notifications and runs the 30-day cleanup
+create or replace function public.ping() returns text
+language plpgsql volatile security definer set search_path = '' as $$
+begin
+  perform private.purge_deleted();
+  perform private.refresh_notifications();
   return 'ok ' || (select count(*) from public.settings)::text;
 end $$;
 

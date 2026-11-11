@@ -272,7 +272,9 @@ begin
   perform set_config('app.purging', 'on', true);
   for d in select * from private.deletions where restored_at is null and purged_at is null
              and deleted_at < now() - interval '30 days' for update skip locked loop
-    if d.kind = 'photo' then
+    if d.kind = 'accessory' then
+      null;   -- the accessory stays hidden (its stock history is kept)
+    elsif d.kind = 'photo' then
       delete from public.photos where id = d.item_id and deleted_at is not null;
     elsif d.kind = 'supplier' then
       delete from public.suppliers s where s.id = d.item_id and s.deleted_at is not null
@@ -346,6 +348,13 @@ begin
   elsif d.kind = 'supplier' then
     update public.suppliers set deleted_at = null, deleted_by = null where id = d.item_id returning code || ', ' || name into v_code;
     perform private.log('restore', 'supplier', d.item_id::text, format('Restored supplier %s', v_code));
+  elsif d.kind = 'accessory' then
+    if exists (select 1 from public.accessories x join public.accessories y on lower(btrim(y.name)) = lower(btrim(x.name))
+               where x.id = d.item_id and y.id <> x.id and y.deleted_at is null) then
+      raise exception 'Another accessory with this name exists now. Rename or delete it first.';
+    end if;
+    update public.accessories set deleted_at = null, deleted_by = null where id = d.item_id returning name into v_code;
+    perform private.log('restore', 'accessory', d.item_id::text, format('Restored accessory %s', v_code));
   elsif d.kind = 'partner' then
     update public.service_partners set deleted_at = null, deleted_by = null where id = d.item_id;
     perform private.log('restore', 'partner', d.item_id::text, format('Restored service partner %s', private.partner_label(d.item_id)));

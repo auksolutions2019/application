@@ -320,6 +320,78 @@ ok(+(await q1(`select count(*) n from public.photos where url like '%second.jpg'
 srv.setPhotoDelete('ok');
 await page.evaluate(() => A.closeModal());
 
+console.log('Accessories, notifications, photo sheet');
+{
+  ok(!(await page.$('#outbtn')) && !!(await page.$('#bellbtn')), 'top bar: the bell replaces the log-out button');
+  await go('more');
+  ok(/Log out/.test(await main()) && /Change my PIN/.test(await main()), 'Log out is in More, with Change my PIN');
+  // add an accessory
+  await go('stock'); await page.evaluate(() => A.stockTab('acc')); await wait(400);
+  ok(/Lots[\s\S]*All laptops[\s\S]*Accessories/.test(await main()) && /No accessories yet/.test(await main()), 'Stock has a third tab: Accessories');
+  await page.evaluate(() => A.addAccessory()); await wait(400);
+  await page.type('#acc_name', 'Keyboard, USB');
+  await page.$eval('#acc_open', e => { e.value = ''; }); await page.type('#acc_open', '10');
+  await page.type('#acc_cost', '250'); await page.type('#acc_price', '400');
+  ok(/alert when only 2 are left/.test(await page.$eval('#sheet', e => e.innerText)), 'Add accessory: alert at 2 by default, with the hint');
+  await shot('09a-add-accessory');
+  await page.click('button[onclick="A.saveNewAccessory()"]'); await wait(1200);
+  ok(/Keyboard, USB[\s\S]*10[\s\S]*left/.test(await main()), 'the list shows "Keyboard, USB 10 left"');
+  const kbId = (await q1(`select id from public.accessories where name = 'Keyboard, USB'`)).id;
+  // given free with a laptop sale: 8 → 2 left, low stock, one notification
+  const saleCode = (await q1(`select l.code from public.laptops l where l.status = 'in_stock' and l.deleted_at is null
+    and (select count(*) from public.laptop_tests t where t.laptop_id = l.id and t.result = 'pass') = 10 order by l.code limit 1`)).code;
+  await page.evaluate(c => A.openLaptop(c), saleCode); await wait(700);
+  await page.evaluate(() => A.lapTab('hand')); await wait(300);
+  ok(/Accessories given with this sale/.test(await page.$eval('#sheet', e => e.innerText)), 'laptop sale: "Accessories given with this sale"');
+  await page.$eval('#h_acc select', (e, id) => { e.value = id; e.dispatchEvent(new Event('change')); }, kbId); await wait(200);
+  for (let i = 0; i < 7; i++) await page.click('#h_acc .accrow button[aria-label="One more"]');
+  const pk = await page.$eval('#h_acc', e => e.innerText);
+  ok(/10 in stock/.test(pk) && /\b8\b/.test(pk) && /After this sale: Keyboard, USB 2 left/.test(pk) && /Free with the laptops/.test(pk), 'picker: 10 in stock, 8 picked, "After this sale: 2 left", free', pk.replace(/\n/g, ' | '));
+  await page.$eval('#sheet', e => e.querySelector('.accgive').scrollIntoView()); await shot('09b-sale-accessories');
+  await page.$eval('#hprice', e => { e.value = '40000'; }); await page.$eval('#hpaid', e => { e.value = '40000'; });
+  await page.$eval('#hname', e => { e.value = 'Shahid'; }); await page.$eval('#hmob', e => { e.value = '9800000123'; });
+  await page.evaluate(() => document.querySelector('#hlead [data-v="Walk-in"]').click());
+  await page.evaluate(() => { A.sellOne(); }); await wait(2500);
+  const mv = await q1(`select sum(delta) q, count(*) filter (where sale_id is not null and free) n from public.accessory_moves where accessory_id = $1`, [kbId]);
+  ok(+mv.q === 2 && +mv.n === 1, 'sold: 8 given free with the sale, 2 left', JSON.stringify(mv) + ' ' + await toastText() + ' ' + await page.evaluate(() => document.querySelector('#dlg:not(.hidden)')?.innerText || '') + ' ' + JSON.stringify(await q1('select status from public.laptops where code = $1', [saleCode])));
+  ok(+(await q1(`select count(*) n from public.notifications where kind = 'low_stock' and link_id = $1`, [kbId])).n === 1, 'one low-stock notification');
+  await page.evaluate(() => A.closeModal()); await wait(200);
+  // the bill has the accessory line
+  const billOk = await page.evaluate(async code => {
+    const { S } = await import('/api/store.js'); const { billHtml } = await import('/ui/print.js');
+    const l = S.d.laptops.find(x => x.code === code); const h = billHtml([l], S.d.settings, true);
+    return /Keyboard, USB/.test(h) && /Free with the laptop/.test(h);
+  }, saleCode);
+  ok(billOk, 'the bill lists "Keyboard, USB × 8, free with the laptop"');
+  // bell and notifications
+  await go('stock'); await page.evaluate(() => A.stockTab('acc')); await wait(400);
+  ok(/Low stock, alert at 2/.test(await main()), 'the list shows it red: "Low stock, alert at 2"');
+  await shot('09c-accessories');
+  const bell = await page.$eval('#bellcount', e => ({ n: +e.textContent, shown: !e.classList.contains('hidden') }));
+  ok(bell.shown && bell.n >= 1, 'the bell shows a red count', JSON.stringify(bell));
+  await page.click('#bellbtn'); await wait(900);
+  ok(/Keyboard, USB: only 2 left/.test(await main()) && await page.$$eval('#main .nrow.unread', r => r.length) >= 1, 'Notifications: "Keyboard, USB: only 2 left", unread');
+  await shot('09d-notifications');
+  await page.evaluate(() => [...document.querySelectorAll('#main .nrow')].find(r => /only 2 left/.test(r.innerText)).click()); await wait(1200);
+  ok(/Keyboard, USB/.test(await page.$eval('#sheet', e => e.innerText)) && /Sell or give/.test(await page.$eval('#sheet', e => e.innerText)), 'tapping it opens the accessory');
+  // can't sell more than in stock
+  await page.$eval('#aout_qty', e => { e.value = '5'; }); await page.click('button[onclick="A.accOut()"]'); await wait(500);
+  ok(/Only 2 Keyboard, USB left/.test(await toastText()), "can't sell more than in stock");
+  await page.evaluate(() => A.closeModal());
+  await page.click('#bellbtn'); await wait(800);
+  if (await page.$('button[onclick="A.markAllRead()"]')) { await page.click('button[onclick="A.markAllRead()"]'); await wait(900); }
+  ok(await page.$eval('#bellcount', e => e.classList.contains('hidden')) && !(await page.$('#main .nrow.unread')), 'Mark all as read clears the bell');
+  // laptop photo: camera or gallery
+  await page.evaluate(c => A.openLaptop(c), demo.l1.codes[5]); await wait(600);
+  await page.click('#sheet .addph'); await wait(300);
+  const ph = await page.evaluate(() => ({ cam: document.getElementById('phcam')?.getAttribute('capture'), camMulti: document.getElementById('phcam')?.multiple,
+    gal: document.getElementById('phgal') && !document.getElementById('phgal').hasAttribute('capture'), galMulti: document.getElementById('phgal')?.multiple,
+    text: document.querySelector('#dlg .dbox')?.innerText || '' }));
+  ok(ph.cam === 'environment' && ph.gal && ph.galMulti && /Camera[\s\S]*Gallery/.test(ph.text), 'Add photos: Camera (snap now) and Gallery (several saved photos)', JSON.stringify(ph));
+  await shot('09e-photo-sheet');
+  await page.click('#dlgno'); await page.evaluate(() => A.closeModal());
+}
+
 console.log('Offline');
 await page.setOfflineMode(true); await page.evaluate(() => dispatchEvent(new Event('offline'))); await wait(300);
 ok(await page.$eval('#offline', e => !e.classList.contains('hidden')), 'offline banner shows');

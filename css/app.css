@@ -447,3 +447,33 @@ button.createlot:disabled{background:#B9C3D4;cursor:default}
 .dbox .blk{max-height:260px;overflow:auto;margin-top:6px}
 .hbtns{display:flex;flex-direction:column-reverse;align-items:flex-end;gap:6px;flex:none}
 .dbox .chips button{white-space:normal;text-align:left;line-height:1.3}
+
+/* 🔔 bell in the top bar */
+header button.bell{position:relative;width:42px;height:42px;padding:0;display:grid;place-items:center;color:#FFD15C}
+header button.bell svg{width:22px;height:22px}
+#bellcount{position:absolute;top:-4px;right:-4px;min-width:20px;height:20px;padding:0 5px;border-radius:10px;background:var(--red);color:#fff;font-size:11.5px;font-weight:750;display:grid;place-items:center;box-shadow:0 0 0 2px var(--ink)}
+
+/* Accessories */
+.accic{font-size:22px;background:#EEF2F8!important;color:inherit!important}
+.crow.acc .cm b{font-size:15.5px}
+.lowtag{display:inline-block;background:#FDE8E7;color:#B42D25;font-size:12px;font-weight:700;border-radius:6px;padding:1px 7px;margin-top:2px}
+.accbar{height:5px;border-radius:3px;background:#E3E9F3;margin-top:8px;overflow:hidden}.accbar i{display:block;height:100%;background:var(--blue);border-radius:3px}
+.crow.acc.low .accbar i{background:var(--red)}
+.accq{text-align:center;flex:none;min-width:44px}.accq b{display:block;font-size:22px;line-height:1.1}.accq span{font-size:12px;color:var(--mut)}
+.crow.acc.low .accq b{color:var(--red)}
+.accbig{display:flex;align-items:baseline;gap:8px;margin:14px 0 10px}.accbig b{font-size:38px;line-height:1}.accbig span{color:var(--mut);font-weight:600}
+.accbig.low b,.accbig.low span{color:var(--red)}
+.accgive .accrow{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:14px;padding:10px 12px;margin-top:8px;background:#fff}
+.accgive .accrow .accic{width:36px;height:36px;border-radius:10px;display:grid;place-items:center;font-size:18px;flex:none}
+.accgive .accrow .cm{flex:1;min-width:0}.accgive .accrow .cm b{display:block;font-size:14.5px}.accgive .accrow .cm span{font-size:12.5px}
+.accgive .accprice{width:84px;padding:8px;font-size:14px;flex:none}
+.stepper.sm{flex:none}.stepper.sm button{width:38px;min-height:40px;font-size:18px}.stepper.sm span{min-width:34px;display:grid;place-items:center;font-weight:750}
+.accgive .accadd{margin-top:8px;color:var(--mut);font-size:14px}
+.accwarn{background:#FFF3DC;color:#8A5A00;border-radius:10px;padding:9px 12px;margin-top:10px;font-size:13px;font-weight:600}
+
+/* Notifications */
+.nrow{cursor:pointer}.nrow.unread{background:#F3F7FF}.nrow.unread .cm b{color:var(--ink)}
+.nrow .nic{font-size:20px;background:#EEF2F8!important;color:inherit!important}
+.nrow .nic.low_stock{background:#FDE8E7!important}.nrow .nic.service_overdue{background:#FFF3DC!important}
+.nrow:not(.unread) .cm b{font-weight:600;color:var(--ink2)}
+.nrow .cm b{white-space:normal;overflow:visible;text-overflow:clip}

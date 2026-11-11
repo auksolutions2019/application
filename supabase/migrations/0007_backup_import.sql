@@ -10,7 +10,8 @@ create or replace function private.backup_tables() returns text[] language sql i
   select array['settings','suppliers','lots','lot_lines','lot_line_costs','laptops','laptop_costs','laptop_tests',
     'lot_expenses','repairs','photos','customers','bookings','booking_payments','invoices','sales','sale_payments','returns',
     'refunds','supplier_payments','debts','debt_payments','shop_expenses','model_prices','service_partners',
-    'service_jobs','service_charges','service_payments','activity_log']
+    'service_jobs','service_charges','service_payments','activity_log',
+    'accessories','accessory_moves','accessory_move_costs','notifications','notification_reads']
 $$;
 
 create or replace function public.export_backup()

@@ -68,6 +68,11 @@ export function billData(laptops, S) {
     const same = !it.w && rows.find(r => !r.w && r.line1 === it.line1 && r.line2 === it.line2 && r.price === it.price && r.wtext === it.wtext);
     if (same) same.qty++; else rows.push({ ...it });
   }
+  // accessories given with the sale: extra lines (free ones at ₹0); what was charged was paid at the sale
+  for (const l of laptops) for (const a of (l.sale.accessories || [])) {
+    rows.push({ acc: true, line1: a.name, line2: a.free ? 'Free with the laptop' : '', wtext: '', qty: a.qty, price: a.free ? 0 : +a.amount / a.qty });
+    if (!a.free && +a.amount > 0) pays.push({ text: `Accessories paid ${dmy(l.sale.sold_on)}, ${a.method || 'Cash'}`, amount: +a.amount, date: l.sale.sold_on, method: a.method });
+  }
   // payments made the same day, the same way, on a bulk bill are shown as one line
   const merged = [];
   for (const p of pays) { const m = merged.find(x => x.text === p.text); if (m) m.amount += p.amount; else merged.push({ ...p }); }
@@ -109,7 +114,7 @@ export function billHtml(laptops, S, color) {
     <div><span class="lbl">Laptop</span>${one ? `<b>${esc(n1.title)}</b><div>Sticker code ${esc(one.code)}</div>${one.serial ? `<div>Serial ${esc(one.serial)}</div>` : ''}`
       : `<b>${laptops.length} laptops</b><div>Sticker codes ${laptops.map(l => esc(l.code)).join(', ')}</div>`}</div></div>
   <table class="it"><tr><th style="width:9mm">#</th><th>Description</th><th class="r">Qty</th><th class="r">Price</th><th class="r">Total</th></tr>
-  ${b.rows.map((r, i) => `<tr><td>${i + 1}</td><td><div class="d1">${esc(r.line1)}</div>${r.line2 ? `<div class="d2">${esc(r.line2)}</div>` : ''}${one ? '' : `<div class="d2">Sticker code ${esc(r.l.code)}${r.l.serial ? ', serial ' + esc(r.l.serial) : ''}</div>`}<div class="d2">${esc(r.wtext)}</div></td>
+  ${b.rows.map((r, i) => `<tr><td>${i + 1}</td><td><div class="d1">${esc(r.line1)}</div>${r.line2 ? `<div class="d2">${esc(r.line2)}</div>` : ''}${one || r.acc ? '' : `<div class="d2">Sticker code ${esc(r.l.code)}${r.l.serial ? ', serial ' + esc(r.l.serial) : ''}</div>`}${r.wtext ? `<div class="d2">${esc(r.wtext)}</div>` : ''}</td>
      <td class="r">${r.qty}</td><td class="r">${rs2(r.price)}</td><td class="r">${rs2(r.qty * r.price)}</td></tr>`).join('')}</table>
   <div class="tot"><div class="words"><span class="lbl">Amount in words</span><div>${esc(rupeesInWords(b.total))}</div></div>
     <div class="sums"><div class="l"><span>Total</span><span>${rs2(b.total)}</span></div>
