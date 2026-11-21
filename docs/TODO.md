@@ -50,11 +50,17 @@ Most important first. Who does it is in brackets.
 - More → Users → Add a user: Raheem as Co-admin, each worker as Staff.
 - The extra admin: log in once and change the PIN (More → Change my PIN).
 
-## 8. Custom domain app.firstchoicelaptops.com (you, optional)
-- Not set up yet: the name does not exist in DNS (checked 21 Nov).
-- Cloudflare: Workers & Pages → first-choice-laptops → Custom domains → add `app.firstchoicelaptops.com`.
-- Domain host (Hostinger): add a DNS record of type CNAME, name `app`, target `first-choice-laptops.pages.dev`.
-- When Cloudflare shows it Active: in Supabase, set the secret `APP_ORIGIN` to `https://app.firstchoicelaptops.com`. After that, use only the new address, and do Add to Home screen again on each phone.
+## 0. Custom domain app.firstchoicelaptops.com (you, now)
+The functions in the repo now accept both addresses (22 Nov). Do these in order:
+1. **Deploy the 4 changed functions** (auth-login, change-pin, admin-users, photo-delete) with the dealer's Supabase account. warranty-check did not change.
+   - Dashboard: Edge Functions → open each one → Code → paste `supabase/functions/<name>/index.ts` → Deploy. Then check that Verify JWT is still off.
+   - Or the CLI with a dealer access token (Supabase → Account → Access Tokens), without touching the TaqwaSteps login: see README step 4.
+2. **Only then**, in Supabase → Edge Functions → Secrets, set `APP_ORIGIN` to
+   `https://first-choice-laptops.pages.dev,https://app.firstchoicelaptops.com`
+3. Cloudflare: Workers & Pages → first-choice-laptops → Custom domains → add `app.firstchoicelaptops.com`.
+4. Domain host (Hostinger): add a DNS record of type CNAME, name `app`, target `first-choice-laptops.pages.dev`.
+5. When Cloudflare shows it Active, open the new address on each phone, log in, and do Add to Home screen. The old address keeps working, so there's no rush.
+6. Tell Claude "check the domain" to confirm both addresses work.
 
 ## 9. Ideas, not built yet (ask Claude when wanted)
 - A "Reverse payment" button for a single payment (today only Undo sale and Return reverse payments).

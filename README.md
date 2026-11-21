@@ -68,6 +68,13 @@ npx supabase functions deploy photo-delete --no-verify-jwt --use-api
 - `supabase login` opens the browser: sign in with the dealer's Supabase account.
 - The project ref is the part of the Project URL before `.supabase.co`. It is also under **Project Settings → General**.
 - `--no-verify-jwt` is needed because each function checks the caller itself, and the login function is called before anyone is logged in.
+- **If this PC's CLI is logged in to another Supabase account** (for example TaqwaSteps), don't log it out. Instead create a token in the dealer's account (**Account → Access Tokens**) and use it for this window only. Close the window when done, and delete the token in Supabase afterwards:
+
+  ```
+  $env:SUPABASE_ACCESS_TOKEN = "paste the dealer's token here"
+  npx supabase functions deploy auth-login --no-verify-jwt --use-api --project-ref YOUR-PROJECT-REF
+  ```
+  Repeat the second line for each function.
 
 **Option B – Dashboard:** **Edge Functions → Deploy a new function → Via Editor**. Do this once for each of `auth-login`, `change-pin`, `admin-users`, `warranty-check` and `photo-delete`:
 1. Use the folder name as the function name.
@@ -80,10 +87,12 @@ npx supabase functions deploy photo-delete --no-verify-jwt --use-api
 Supabase already gives the functions `SUPABASE_URL`, `SUPABASE_ANON_KEY` and `SUPABASE_SERVICE_ROLE_KEY`; nothing to add for those. One optional secret limits which website may call the functions:
 
 ```
-npx supabase secrets set APP_ORIGIN=https://first-choice-laptops.pages.dev
+npx supabase secrets set APP_ORIGIN=https://first-choice-laptops.pages.dev,https://app.firstchoicelaptops.com
 ```
 
-You can also add it in the dashboard: **Edge Functions → Secrets**, name `APP_ORIGIN`. Use the site address from step 8. If you skip this, any site may call the functions; the PIN lock and role checks still apply.
+You can also add it in the dashboard: **Edge Functions → Secrets**, name `APP_ORIGIN`. Use the site address from step 8. For more than one address, separate them with commas and no spaces, as above. Each address starts with `https://` and has no `/` at the end. If you skip this, any site may call the functions; the PIN lock and role checks still apply. (`warranty-check` is public and always accepts any site.)
+
+Deploy the functions first, then change APP_ORIGIN. Functions older than 22 Nov 2026 accept only one address, so a comma list would stop them working.
 
 **Cloudinary secrets (for deleting photos).** `photo-delete` needs three secrets. They go only into Supabase, never into the app or this repo:
 

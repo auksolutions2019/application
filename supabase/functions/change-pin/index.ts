@@ -5,10 +5,24 @@ import { createClient } from 'npm:@supabase/supabase-js@2.115.0';
 
 const URL_ = Deno.env.get('SUPABASE_URL')!;
 const SERVICE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-const ORIGIN = Deno.env.get('APP_ORIGIN') || '*';
+// APP_ORIGIN: the site address allowed to call this function, or several separated by commas,
+// e.g. https://first-choice-laptops.pages.dev,https://app.firstchoicelaptops.com. Empty means any site.
+const ORIGINS = (Deno.env.get('APP_ORIGIN') || '').split(',').map((s) => s.trim().replace(/\/+$/, '')).filter(Boolean);
+function allowOrigin(req: Request): string {
+  if (!ORIGINS.length || ORIGINS.includes('*')) return '*';
+  const o = req.headers.get('Origin') || '';
+  return ORIGINS.includes(o) ? o : ORIGINS[0];
+}
+// Runs the handler, then adds the CORS origin that matches this request.
+const serveWithCors = (handler: (req: Request) => Promise<Response>) => Deno.serve(async (req) => {
+  const res = await handler(req);
+  const out = new Response(res.body, res);
+  out.headers.set('Access-Control-Allow-Origin', allowOrigin(req));
+  return out;
+});
 const MAX_TRIES = 5, LOCK_MIN = 15;
 
-const cors = { 'Access-Control-Allow-Origin': ORIGIN, 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type', 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Vary': 'Origin' };
+const cors = { 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type', 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Vary': 'Origin' };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { ...cors, 'Content-Type': 'application/json' } });
 const admin = createClient(URL_, SERVICE, { auth: { persistSession: false, autoRefreshToken: false } });
 const weak = (p: string) => !/^\d{6}$/.test(p) || /^(\d)\1{5}$/.test(p) || ['123456', '654321'].includes(p);
@@ -31,7 +45,7 @@ async function caller(req: Request) {
   return { user: data.user, prof };
 }
 
-Deno.serve(async (req) => {
+serveWithCors(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return json(405, { error: 'method', message: 'Use POST' });
   const me = await caller(req);
