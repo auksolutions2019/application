@@ -51,7 +51,11 @@ Most important first. Who does it is in brackets.
 - The extra admin: log in once and change the PIN (More → Change my PIN).
 
 ## 0. Custom domain app.firstchoicelaptops.com (you, now)
-The functions in the repo now accept both addresses (22 Nov). Do these in order:
+Status 22 Nov: the domain is connected and serves fcl-v10, and /w/ opens on both addresses. ⚠️ Login on the new
+address fails ("Could not reach the server") because Supabase still runs the old one-address functions.
+Steps 3 and 4 are done; steps 1 and 2 are left.
+
+The functions in the repo accept both addresses (commit 5b68342). Do these in order:
 1. **Deploy the 4 changed functions** (auth-login, change-pin, admin-users, photo-delete) with the dealer's Supabase account. warranty-check did not change.
    - Dashboard: Edge Functions → open each one → Code → paste `supabase/functions/<name>/index.ts` → Deploy. Then check that Verify JWT is still off.
    - Or the CLI with a dealer access token (Supabase → Account → Access Tokens), without touching the TaqwaSteps login: see README step 4.
